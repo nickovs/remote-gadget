@@ -1,0 +1,142 @@
+keymaps 0-127
+keycode 1 = Escape Escape Escape Escape
+keycode 2 = U+0026 U+0031 U+00b9 U+00a1
+keycode 3 = +U+00e9 U+0032 U+007e U+215b
+keycode 4 = U+0022 U+0033 U+0023 U+00a3
+keycode 5 = U+0027 U+0034 U+007b U+0024
+keycode 6 = U+0028 U+0035 U+005b U+215c
+keycode 7 = U+002d U+0036 U+007c U+215d
+keycode 8 = +U+00e8 U+0037 U+0060 U+215e
+keycode 9 = U+005f U+0038 U+005c U+2122
+keycode 10 = +U+00e7 U+0039 U+005e U+00b1
+keycode 11 = +U+00e0 U+0030 U+0040 U+00b0
+keycode 12 = U+0029 U+00b0 U+005d U+00bf
+keycode 13 = U+003d U+002b U+007d dead_kogonek
+keycode 14 = Delete Delete Delete Delete
+keycode 15 = Tab Meta_Tab Tab Meta_Tab
+keycode 16 = +U+0061 +U+0041 +U+00e6 +U+00c6
+keycode 17 = +U+007a +U+005a U+00ab U+003c
+keycode 18 = +U+0065 +U+0045 U+20ac U+00a2
+keycode 19 = +U+0072 +U+0052 U+00b6 U+00ae
+keycode 20 = +U+0074 +U+0054 +U+0167 +U+0166
+keycode 21 = +U+0079 +U+0059 U+2190 U+00a5
+keycode 22 = +U+0075 +U+0055 U+2193 U+2191
+keycode 23 = +U+0069 +U+0049 U+2192 +U+0131
+keycode 24 = +U+006f +U+004f +U+00f8 +U+00d8
+keycode 25 = +U+0070 +U+0050 +U+00fe +U+00de
+keycode 26 = dead_circumflex dead_diaeresis dead_diaeresis dead_abovering
+keycode 27 = U+0024 U+00a3 U+00a4 dead_macron
+keycode 28 = Return Return Return Return
+keycode 29 = Control Control Control Control
+keycode 30 = +U+0071 +U+0051 U+0040 +U+03a9
+keycode 31 = +U+0073 +U+0053 +U+00df +U+1e9e
+keycode 32 = +U+0064 +U+0044 +U+00f0 +U+00d0
+keycode 33 = +U+0066 +U+0046 +U+0111 +U+00aa
+keycode 34 = +U+0067 +U+0047 +U+014b +U+014a
+keycode 35 = +U+0068 +U+0048 +U+0127 +U+0126
+keycode 36 = +U+006a +U+004a dead_hook dead_horn
+keycode 37 = +U+006b +U+004b +U+0138 U+0026
+keycode 38 = +U+006c +U+004c +U+0142 +U+0141
+keycode 39 = +U+006d +U+004d +U+00b5 +U+00ba
+keycode 40 = +U+00f9 U+0025 dead_circumflex dead_kcaron
+keycode 41 = U+00b2 U+007e U+00ac U+00ac
+keycode 42 = Shift Shift Shift Shift
+keycode 43 = U+002a +U+00b5 dead_grave dead_kbreve
+keycode 44 = +U+0077 +U+0057 +U+0142 +U+0141
+keycode 45 = +U+0078 +U+0058 U+00bb U+003e
+keycode 46 = +U+0063 +U+0043 U+00a2 U+00a9
+keycode 47 = +U+0076 +U+0056 U+201e U+201a
+keycode 48 = +U+0062 +U+0042 U+201c U+2018
+keycode 49 = +U+006e +U+004e U+201d U+2019
+keycode 50 = U+002c U+003f dead_acute dead_kdoubleacute
+keycode 51 = U+003b U+002e U+2022 U+00d7
+keycode 52 = U+003a U+002f U+00b7 U+00f7
+keycode 53 = U+0021 U+00a7 dead_belowdot dead_abovedot
+keycode 54 = Shift Shift Shift Shift
+keycode 55 = KP_Multiply KP_Multiply Hex_C KP_Multiply
+keycode 56 = Alt Alt Alt Alt
+keycode 57 = U+0020 U+0020 U+0020 U+0020
+keycode 58 = CtrlL_Lock CtrlL_Lock CtrlL_Lock CtrlL_Lock
+keycode 59 = F1 F13 Console_13 Console_25
+keycode 60 = F2 F14 Console_14 Console_26
+keycode 61 = F3 F15 Console_15 Console_27
+keycode 62 = F4 F16 Console_16 Console_28
+keycode 63 = F5 F17 Console_17 Console_29
+keycode 64 = F6 F18 Console_18 Console_30
+keycode 65 = F7 F19 Console_19 Console_31
+keycode 66 = F8 F20 Console_20 Console_32
+keycode 67 = F9 F21 Console_21 Console_33
+keycode 68 = F10 F22 Console_22 Console_34
+keycode 69 = Num_Lock Num_Lock Hex_A Num_Lock
+keycode 70 = Scroll_Lock Show_Memory Show_Registers Scroll_Lock
+keycode 71 = KP_7 KP_7 Hex_7 KP_7
+keycode 72 = KP_8 KP_8 Hex_8 KP_8
+keycode 73 = KP_9 KP_9 Hex_9 KP_9
+keycode 74 = KP_Subtract KP_Subtract Hex_D KP_Subtract
+keycode 75 = KP_4 KP_4 Hex_4 KP_4
+keycode 76 = KP_5 KP_5 Hex_5 KP_5
+keycode 77 = KP_6 KP_6 Hex_6 KP_6
+keycode 78 = KP_Add KP_Add Hex_E KP_Add
+keycode 79 = KP_1 KP_1 Hex_1 KP_1
+keycode 80 = KP_2 KP_2 Hex_2 KP_2
+keycode 81 = KP_3 KP_3 Hex_3 KP_3
+keycode 82 = KP_0 KP_0 Hex_0 KP_0
+keycode 83 = KP_Period KP_Period KP_Period KP_Period
+keycode 84 = Last_Console Last_Console Last_Console Last_Console
+keycode 86 = U+003c U+003e U+007c U+00a6
+keycode 87 = F11 F23 Console_23 Console_35
+keycode 88 = F12 F24 Console_24 Console_36
+keycode 102 = Home Home Home Home
+keycode 103 = Up Up Up Up
+keycode 104 = Prior Scroll_Backward Prior Prior
+keycode 105 = Left Left Left Left
+keycode 106 = Right Right Right Right
+keycode 107 = End End End End
+keycode 108 = Down Down Down Down
+keycode 109 = Next Scroll_Forward Next Next
+keycode 110 = Insert Insert Insert Insert
+keycode 111 = Remove Remove Remove Remove
+keycode 96 = KP_Enter KP_Enter Hex_F KP_Enter
+keycode 97 = Control Control Control Control
+keycode 119 = Pause Pause Pause Pause
+keycode 99 = VoidSymbol VoidSymbol Control_backslash Control_backslash
+keycode 98 = KP_Divide KP_Divide Hex_B KP_Divide
+keycode 100 = AltGr AltGr AltGr AltGr
+keycode 101 = Break Break Break Break
+keycode 125 = Alt Alt Alt Alt
+keycode 126 = Alt Alt Alt Alt
+keycode 127 = VoidSymbol VoidSymbol VoidSymbol VoidSymbol
+keycode 121 = KP_Period KP_Period KP_Period KP_Period
+strings as usual
+# The content of this file will be appended to the keyboard layout.
+# The following is an example how to make Alt+j switch to to the next
+# console and Alt+k switch to the previous console.
+
+# Uncomment the following lines for Linux.  Notice that everything is
+# replicated for all possible values of the modifiers shiftl, shiftr
+# and ctrll (shiftl and shiftr are used for groups 1..4 of XKB and
+# ctrll is used to fix the broken CapsLock when Linux console is in
+# Unicode mode).
+
+# alt keycode 36 = Incr_Console
+# shiftl alt keycode 36 = Incr_Console
+# shiftr alt keycode 36 = Incr_Console
+# shiftr shiftl alt keycode 36 = Incr_Console
+# ctrll alt keycode 36 = Incr_Console
+# ctrll shiftl alt keycode 36 = Incr_Console
+# ctrll shiftr alt keycode 36 = Incr_Console
+# ctrll shiftr shiftl alt keycode 36 = Incr_Console
+#
+# alt keycode 37 = Decr_Console
+# shiftl alt keycode 37 = Decr_Console
+# shiftr alt keycode 37 = Decr_Console
+# shiftr shiftl alt keycode 37 = Decr_Console
+# ctrll alt keycode 37 = Decr_Console
+# ctrll shiftl alt keycode 37 = Decr_Console
+# ctrll shiftr alt keycode 37 = Decr_Console
+# ctrll shiftr shiftl alt keycode 37 = Decr_Console
+
+# For the same result on FreeBSD uncomment the following lines:
+
+#  036   'j'    'J'    nl     nl     nscr   nscr   nl     nl      C
+#  037   'k'    'K'    vt     vt     pscr   pscr   nl     nl      C

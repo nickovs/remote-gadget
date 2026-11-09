@@ -1,0 +1,21 @@
+# Run with: uv run pre-commit install   (or pipx run pre-commit install)
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.4
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: pytest
+        name: pytest (unit + helper)
+        entry: uv run pytest -q tests/unit tests/helper
+        language: system
+        types: [python]
+        pass_filenames: false

@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.33"]
+build-backend = "hatchling.build"
+
+[project]
+name = "remote-gadget"
+version = "0.1.0"
+description = "Manage a Raspberry Pi USB gadget (keyboard + storage) over ssh"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Nicko van Someren", email = "nicko@nicko.org" }]
+requires-python = ">=3.10"
+dependencies = []
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Hardware :: Universal Serial Bus (USB)",
+]
+
+[project.scripts]
+remote-gadget = "remote_gadget.cli:main"
+
+[dependency-groups]
+test = ["pytest==9.2.0"]
+lint = ["ruff==0.17.4", "mypy==2.4.1"]
+dev = [
+    { include-group = "test" },
+    { include-group = "lint" },
+    # tox drives the per-version envs itself; it only needs to run on the dev interpreter.
+    "tox==4.67.13; python_version >= '3.11'",
+    "tox-uv==1.37.7; python_version >= '3.11'",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/remote_gadget"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: needs a real gadget host (set RGADGET_TEST_PROFILE)"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# The helper runs on the gadget host, which may only have Python 3.9.
+per-file-target-version = { "src/remote_gadget/remote/helper.py" = "py39" }
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+files = ["src"]
