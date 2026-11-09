@@ -46,7 +46,7 @@ BIOS/UEFI setup screens, installers or login prompts.
 | # | Requirement |
 |---|-------------|
 | R1 | Subcommands: `init`, `state`, `doctor`, `write`, `read`, `plug`, `unplug`, `type`, `reset`. |
-| R2 | Config is INI-style profiles, merged from `./.rgadget`, `~/.rgadget` and `/etc/rgadget` (nearer files win). |
+| R2 | Config is INI-style profiles in `./.rgadget`, `~/.rgadget` and `/etc/rgadget`; each profile is taken whole from the nearest file that defines it. |
 | R3 | Every config value can be overridden on the command line. |
 | R4 | Short commands with sensible defaults; terse output; `--quiet` prints only warnings and errors. |
 | R5 | Exit status is 0 on success and non-zero on failure; colour is used only on a colour-capable TTY. |
@@ -115,7 +115,8 @@ src/remote_gadget/
     __init__.py         # exports Gadget, Config, errors, __version__
     __main__.py         # python -m remote_gadget
     cli.py              # argparse; maps subcommands to Gadget methods; exit codes
-    config.py           # profile loading, merging, validation, CLI overrides
+    config.py           # profile loading, saving, validation, CLI overrides
+    inifile.py          # comment-preserving INI section editor (used by `config`)
     transport.py        # Transport protocol + SshTransport (ssh/scp via subprocess)
     api.py              # Gadget class: init/state/doctor/write/read/plug/unplug/type/reset
     output.py           # Reporter: levels, colour detection, --quiet
@@ -149,12 +150,14 @@ its exact bytes using `importlib.resources`.
 
 ## 5. Configuration
 
-### 5.1 Files and merging
+### 5.1 Files and precedence
 
-The files are read in order of increasing precedence: `/etc/rgadget`, `~/.rgadget`, then
-`./.rgadget`. `configparser.read()` is used with the list in that order, so a key in a
-nearer file overrides the same key in the same section of a farther file. Missing files
-are skipped. A file that exists but cannot be parsed or read is a fatal config error
+The files, in increasing precedence, are `/etc/rgadget`, `~/.rgadget` and `./.rgadget`.
+Each file is parsed on its own. **A profile is taken whole from the nearest file that
+defines it**; keys are never merged between files, so a profile in `./.rgadget` does not
+inherit anything from a profile of the same name in `~/.rgadget`. The nearest file with a
+`[default]` section likewise supplies the default profile name. Inline comments
+(`host = pi.local ; my Pi`) are allowed. Missing files are skipped. A file that exists but cannot be parsed or read is a fatal config error
 (exit 2), and the message names the file and line.
 
 `--config FILE` replaces the search list with that single file.
@@ -198,7 +201,7 @@ keymap = gb
 * Unknown keys in a profile produce a warning, not an error. This allows files to be
   shared with later versions.
 * **Profile selection:** `--profile NAME`, then `$RGADGET_PROFILE`, then `[default] profile`.
-  If none of these is set and the merged config has exactly one profile, that profile is
+  If none of these is set and the files define exactly one profile, that profile is
   used. Otherwise it is an error.
 * If no config files exist, `--host` alone is enough to run.
 
@@ -208,6 +211,31 @@ These global options override the profile: `--host`, `--username/-u`, `--key/-i`
 `--sudo/--nosudo`, `--path`, `--size`, `--keymap`, `--vendor-id`, `--product-id`
 (`readonly` is overridden by `plug --ro/--rw`). They are validated with the same rules
 as the config file. The result is an immutable `Config` dataclass.
+
+### 5.4 Writing profiles: `config`
+
+`remote-gadget config -p NAME [settings] [--update | --overwrite] [--user] [--unset KEY]...`
+creates or changes a profile. The settings are the global options from §5.3, plus
+`--ro/--rw`, which set `readonly`. Every option can come after the word `config`.
+
+* **Target file:** the nearest of `./.rgadget` and `~/.rgadget` that already defines
+  `[NAME]`, otherwise `./.rgadget`. `--user` always writes `~/.rgadget`, with a warning if
+  `./.rgadget` also defines `[NAME]`, because that copy still takes precedence.
+  `/etc/rgadget` is never written.
+* **An existing profile** (in any of the three files) needs `--update` or `--overwrite`;
+  otherwise the command fails (exit 2).
+  * `--update` starts from the profile's current settings and applies the given options
+    and `--unset` removals. If the profile only exists in a farther file (for example
+    `/etc/rgadget`), it is copied into the target file with the changes applied.
+  * `--overwrite` replaces the profile with exactly the given options.
+* Because profiles are never merged between files, `--unset` just deletes the key from the
+  target file.
+* **Validation:** the resulting profile is checked with the same rules as loading
+  (`host` is required) before anything is written. Values are saved as typed, so `~` in
+  `key` stays `~`.
+* **Editing:** `configparser` drops comments when it writes, so `inifile.set_section`
+  edits only the lines of `[NAME]` that change. Comments, other sections, unchanged keys
+  and inline comments on rewritten keys are kept. The file is replaced atomically.
 
 ---
 
@@ -582,7 +610,7 @@ The API returns data and raises exceptions. All printing lives in `cli.py` and `
 
 ## 11. Testing
 
-* **Unit (client):** config merging and validation (tmp-path config files, every
+* **Unit (client):** config precedence, validation and saving, the INI editor (tmp-path config files, every
   override); CLI argument parsing and exit-code mapping; `Gadget` against a
   `FakeTransport` that records commands and returns helper JSON from fixtures; colour
   detection.
@@ -614,7 +642,8 @@ The API returns data and raises exceptions. All printing lives in `cli.py` and `
 | Plug/unplug semantics not specified | Unplug turns the D+ pull-up off (UDC unbind), so the target sees a real disconnect and enumerates again on plug | The target must reread the storage after a `write`. |
 | — | Added `plug --ro`/`readonly`, and the optional `vendor_id`/`product_id` | Requested. |
 | — | Added `ls`, `rm` and the `-f`, `--fix`, `--reformat`, `--timeout`, `--delay`, `--enter` options | Needed for the listed commands to be usable and safe. |
-| Config "precedence" | Files are merged; nearer files win key by key | Decision by the author. |
+| Config "precedence" | Each profile is taken whole from the nearest file that defines it | Decision by the author. (An earlier draft merged key by key.) |
+| — | Added `config` to create and edit profiles (§5.4) | Requested. |
 
 ---
 

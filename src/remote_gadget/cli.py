@@ -11,7 +11,7 @@ from typing import Any
 
 from . import __version__
 from .api import Gadget
-from .config import Config
+from .config import Config, save_profile
 from .errors import RemoteGadgetError, TypingTimeoutError, UsageError
 from .output import Reporter
 
@@ -56,6 +56,22 @@ def build_parser() -> argparse.ArgumentParser:
     def add(name: str, help: str) -> argparse.ArgumentParser:
         return sub.add_parser(name, help=help, description=help, parents=[common])
 
+    sp = add("config", "create or change a profile in ./.rgadget (or ~/.rgadget)")
+    how = sp.add_mutually_exclusive_group()
+    how.add_argument("--update", action="store_true", help="change an existing profile")
+    how.add_argument("--overwrite", action="store_true", help="replace an existing profile")
+    sp.add_argument("--user", action="store_true", help="write ~/.rgadget, not ./.rgadget")
+    sp.add_argument(
+        "--unset", action="append", default=[], metavar="KEY", choices=sorted(_SETTINGS),
+        help="remove a setting (repeatable)",
+    )  # fmt: skip
+    ro = sp.add_mutually_exclusive_group()
+    ro.add_argument(
+        "--ro", dest="readonly", action="store_true", default=None, help="plug read-only by default"
+    )
+    ro.add_argument(
+        "--rw", dest="readonly", action="store_false", help="plug read-write by default"
+    )
     sp = add("init", "set up the gadget host (idempotent)")
     sp.add_argument("--reboot", action="store_true", help="reboot if needed")
     sp.add_argument("--install-packages", action="store_true", help="apt-get install tools")
@@ -90,6 +106,8 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+_SETTINGS = ("host", "username", "key", "nosudo", "path", "size", "keymap", "readonly",
+             "vendor_id", "product_id")  # fmt: skip
 _OVERRIDES = ("host", "username", "key", "nosudo", "path", "size", "keymap", "vendor_id",
               "product_id")  # fmt: skip
 
@@ -131,8 +149,30 @@ def _confirm(question: str) -> bool:
     return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
 
 
+def _config(args: argparse.Namespace, out: Reporter) -> int:
+    name = getattr(args, "profile", None)
+    if not name:
+        raise UsageError("config needs -p/--profile NAME")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        path = save_profile(
+            name,
+            {k: getattr(args, k, None) for k in _SETTINGS},
+            unset=args.unset,
+            update=args.update,
+            overwrite=args.overwrite,
+            user=args.user,
+        )
+    for w in caught:
+        out.warn(str(w.message))
+    out.success(f"saved profile [{name}] in {path}")
+    return 0
+
+
 def run(args: argparse.Namespace, out: Reporter) -> int:
     """Execute a parsed command; return the exit status."""
+    if args.command == "config":
+        return _config(args, out)
     cfg = load_config(args, out)
     g = Gadget(cfg, on_warning=out.warn)
     name = cfg.profile or cfg.host

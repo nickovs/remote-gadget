@@ -54,8 +54,22 @@ $ uv tool install .        # or: pipx install .
 
 ## Configuration
 
-Profiles live in INI files. These are read and merged, with nearer files winning key
-by key: `/etc/rgadget`, then `~/.rgadget`, then `./.rgadget`.
+Profiles live in INI files: `./.rgadget`, `~/.rgadget` and `/etc/rgadget`, in that
+order of precedence. Each profile is taken whole from the first of these files that
+defines it; settings are not merged between files.
+
+The easiest way to create or change a profile is the `config` command:
+
+```console
+$ remote-gadget config -p lab-pi --host rgadget.local --keymap gb --ro   # new, in ./.rgadget
+$ remote-gadget config -p lab-pi --update --size 128 --unset keymap      # change it
+$ remote-gadget config -p lab-pi --overwrite --host other.local          # replace it
+$ remote-gadget config -p lab-pi --user --host rgadget.local             # in ~/.rgadget
+```
+
+An existing profile is edited where it is found (in `./.rgadget` or `~/.rgadget`), and needs
+`--update` or `--overwrite`. Comments in the file are kept. You can also edit the files
+by hand:
 
 ```ini
 [default]
@@ -87,6 +101,7 @@ remote-gadget [global options] <command> [options]
 
 | Command | What it does |
 |---------|--------------|
+| `config -p NAME [settings] [--update\|--overwrite] [--user] [--unset KEY]` | Create or change a profile (see Configuration). |
 | `init [--install-packages] [--reboot] [--reformat -y]` | Set up the Pi: dwc2 overlay, packages, state dir, storage image. Safe to re-run. Exit status 4 means a reboot is needed. |
 | `doctor [--fix]` | Check connectivity, sudo, packages, overlay, UDC and image, and fix what it can. |
 | `state` | Show `uninitialised`, `stopped`, `unplugged` or `plugged` (with `read-only`/`read-write` and whether the target has configured the device), plus free space. |

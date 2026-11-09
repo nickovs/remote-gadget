@@ -16,9 +16,12 @@ from remote_gadget.output import Reporter, use_colour
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "home").mkdir()
     monkeypatch.delenv("RGADGET_PROFILE", raising=False)
-    monkeypatch.setattr("remote_gadget.config.search_path", lambda: [])
+    monkeypatch.setattr(
+        "remote_gadget.config.search_path",
+        lambda: [tmp_path / "etc-rgadget", tmp_path / "home/.rgadget", tmp_path / ".rgadget"],
+    )
 
 
 class FakeGadget:
@@ -143,3 +146,28 @@ def test_rm(fake, capsys):
     assert cli.main(["--host", "pi", "rm", "-r", "/d"]) == 0
     assert fake.calls[0] == ("rm", ("/d",), {"recursive": True})
     assert "deleted directory /d" in capsys.readouterr().out
+
+
+def test_config_command_all_options_after_command(tmp_path, capsys):
+    argv = ["config", "-p", "lab", "--host", "pi.local", "--keymap", "gb", "--ro",
+            "--nosudo", "--vendor-id", "0x1234"]  # fmt: skip
+    assert cli.main(argv) == 0
+    assert "saved profile [lab]" in capsys.readouterr().out
+    assert (tmp_path / ".rgadget").read_text() == (
+        "[lab]\nhost = pi.local\nnosudo = true\nkeymap = gb\nreadonly = true\nvendor_id = 0x1234\n"
+    )
+    assert cli.main(["config", "-p", "lab", "--host", "x"]) == 2
+    assert "--update or --overwrite" in capsys.readouterr().err
+    assert cli.main(["config", "-p", "lab", "--update", "--rw", "--unset", "keymap"]) == 0
+    assert "readonly = false" in (tmp_path / ".rgadget").read_text()
+    assert "keymap" not in (tmp_path / ".rgadget").read_text()
+
+
+def test_config_needs_profile(capsys):
+    assert cli.main(["config", "--host", "x"]) == 2
+    assert "-p/--profile" in capsys.readouterr().err
+
+
+def test_config_update_overwrite_exclusive(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["config", "-p", "a", "--update", "--overwrite"])
