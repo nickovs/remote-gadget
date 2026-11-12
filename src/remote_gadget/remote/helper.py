@@ -61,6 +61,9 @@ MOD_RALT = 0x40
 HID_ENTER = 0x28
 HID_TAB = 0x2B
 HID_DELETE = 0x4C
+HID_F1 = 0x3A  # F1-F12 are consecutive usages
+# Time for a Ctrl-Alt-F<n> console switch to take effect before Ctrl-Alt-Del.
+VT_SWITCH_SECONDS = 1.0
 RELEASE_REPORT = bytes(8)
 
 KeyMap = dict[str, tuple[int, int]]  # char -> (modifiers, HID usage)
@@ -1038,8 +1041,13 @@ def op_type(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
 def op_reset(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
     require_root(ctx)
     require_configured(ctx)
-    if send_keys(hid_device(ctx), [(MOD_LCTRL | MOD_LALT, HID_DELETE)], args.timeout, 0) < 1:
-        raise HelperError("typing_timeout", "target did not read the keyboard")
+    dev = hid_device(ctx)
+    combos = [HID_DELETE] if args.fswitch is None else [HID_F1 + args.fswitch - 1, HID_DELETE]
+    for i, usage in enumerate(combos):
+        if i:
+            time.sleep(VT_SWITCH_SECONDS)
+        if send_keys(dev, [(MOD_LCTRL | MOD_LALT, usage)], args.timeout, 0) < 1:
+            raise HelperError("typing_timeout", "target did not read the keyboard")
     return {}
 
 
@@ -1107,7 +1115,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--keymap", default="us")
     sp.add_argument("--timeout", type=float, default=5.0)
     sp.add_argument("--delay", type=float, default=0.0, help="milliseconds between keys")
-    add("reset", op_reset).add_argument("--timeout", type=float, default=5.0)
+    sp = add("reset", op_reset)
+    sp.add_argument("--timeout", type=float, default=5.0)
+    sp.add_argument("--fswitch", type=int, choices=range(1, 13))
     return p
 
 

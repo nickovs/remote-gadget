@@ -102,7 +102,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--enter", action="store_true", help="press Enter after the text")
     sp.add_argument("--timeout", type=float, default=5.0, help="seconds without progress")
     sp.add_argument("--delay", type=float, default=0.0, help="milliseconds between keys")
-    add("reset", "send Ctrl-Alt-Del to the target")
+    sp = add("reset", "send Ctrl-Alt-Del to the target")
+    sp.add_argument("--fswitch", type=int, choices=range(1, 13), metavar="N",
+                    help="first send Ctrl-Alt-F<N> (1-12) to switch to a text console")  # fmt: skip
     return p
 
 
@@ -243,8 +245,9 @@ def run(args: argparse.Namespace, out: Reporter) -> int:
             return 1
         out.success(f"typed {res['sent']} characters")
     elif cmd == "reset":
-        g.reset()
-        out.success(f"{name}: sent Ctrl-Alt-Del")
+        g.reset(fswitch=args.fswitch)
+        sent = "Ctrl-Alt-Del" if args.fswitch is None else f"Ctrl-Alt-F{args.fswitch}, Ctrl-Alt-Del"
+        out.success(f"{name}: sent {sent}")
     return 0
 
 

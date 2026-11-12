@@ -171,3 +171,16 @@ def test_config_needs_profile(capsys):
 def test_config_update_overwrite_exclusive(capsys):
     with pytest.raises(SystemExit):
         cli.main(["config", "-p", "a", "--update", "--overwrite"])
+
+
+def test_reset_fswitch(fake, capsys):
+    assert cli.main(["--host", "pi", "reset", "--fswitch", "3"]) == 0
+    assert fake.calls[0][2] == {"fswitch": 3}
+    assert "Ctrl-Alt-F3, Ctrl-Alt-Del" in capsys.readouterr().out
+
+
+def test_reset_fswitch_out_of_range(fake):
+    with pytest.raises(SystemExit) as e:
+        cli.main(["--host", "pi", "reset", "--fswitch", "13"])
+    assert e.value.code == 2
+    assert fake.calls == []

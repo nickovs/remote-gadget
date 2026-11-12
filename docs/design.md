@@ -484,7 +484,7 @@ Global options: `-p/--profile`, `--config`, the config overrides (§5.3), `-q/--
 | `plug [--ro \| --rw]` | Starts the gadget if `stopped`, sets the LUN read-only or read-write (§6.2), waits out the minimum time unplugged, then binds the UDC, which turns the pull-up on. Fails with a hint if the host is `uninitialised`. If already plugged with a different `ro` setting, it fails with a hint to `unplug` first (it never re-plugs on its own). |
 | `unplug` | Starts the gadget if `stopped`, so that the end state is a well-defined `unplugged`, then unbinds the UDC, which turns the pull-up off so the target sees the device removed (§6.2). Saves `unplugged_at`. |
 | `type [TEXT \| -] [--enter] [--timeout S] [--delay MS]` | §9. With no TEXT, or with `-`, reads stdin. Nothing is added to the text unless `--enter` is given, because a stray Enter at a BIOS menu selects something. Needs `plugged` and target state `configured`. |
-| `reset` | Sends Ctrl-Alt-Del: report `05 00 4C 00 00 00 00 00` followed by the all-zero release report. Same preconditions as `type`. |
+| `reset [--fswitch N]` | Sends Ctrl-Alt-Del: report `05 00 4C 00 00 00 00 00` followed by the all-zero release report. Same preconditions as `type`. With `--fswitch N` (1–12) it first sends Ctrl-Alt-F`N` (usage `0x3A + N - 1`), then waits 1 s before Ctrl-Alt-Del. A Linux kernel acts on Ctrl-Alt-Del only on a text console (§13), so this switches a graphical target to one first. |
 
 ### 8.1 `doctor`
 
@@ -697,13 +697,29 @@ The API returns data and raises exceptions. All printing lives in `cli.py` and `
    70-character string covering letters, digits, Shift symbols and space arrived exactly.
    In the EDK II EFI shell, `type` worked for letters, digits and Shift symbols, before
    and after a re-plug (typing `reset` rebooted the target).
-   Not yet tried: other layouts on a real target, the `reset` command, and the timeout
-   path against a real host.
+   `reset` (Ctrl-Alt-Del) *checked*: the EDK II USB keyboard driver resets the machine.
+   On Ubuntu 26.04 (GNOME 50) the GDM login screen ignores it (gnome-settings-daemon only
+   handles the `logout` binding outside the login screen), and in a logged-in session it
+   opens the "log out in 60 seconds" dialog. The kernel only acts on Ctrl-Alt-Del on a
+   text VT. So `reset` is a reliable reboot only in firmware or on a text console, and
+   `reset --fswitch N` switches to text console `N` first. *Checked*: `reset --fswitch 3`
+   rebooted the same target from the GDM login screen and from a logged-in session,
+   reaching `reboot.target` within 3 s with no dialog. In the EDK II EFI shell the extra
+   Ctrl-Alt-F3 only repositions the cursor (no history recall or input), and the
+   Ctrl-Alt-Del still resets the machine, so `--fswitch` is safe whichever the target is
+   running.
+   Not yet tried: other layouts on a real target, and the timeout path against a real
+   host.
 6. **Storage in both directions:** *checked* with a macOS target. A file written by `write`
    while unplugged read back identically on the Mac after `plug --rw`. A file the Mac wrote
    (then ejected) read back identically with `read` after `unplug`. `fsck.vfat -n` found the
    image clean afterwards. The target must eject before `unplug`; this is documented in the
-   README, and the tool cannot enforce it.
+   README, and the tool cannot enforce it. Also *checked* with a Linux target: files the
+   target wrote read back identically with `read`. Under UEFI, `plug --ro` shows the volume
+   as `(r)`, and creating, copying over and deleting files all fail (`Write Protected`).
+   An EFI binary written with `write` runs from the drive in the EFI shell. The FAT dirty
+   bit was once found set by an earlier mount that was never cleanly unmounted;
+   `fsck.vfat -a` on the image clears it.
 
 ## 14. Resolved decisions
 

@@ -112,7 +112,7 @@ remote-gadget [global options] <command> [options]
 | `ls [DIR]` | List the drive. |
 | `rm [-r] REMOTE` | Delete a file or empty directory (`-r` deletes a directory tree). Refused while plugged. |
 | `type [TEXT\|-] [--enter] [--timeout S] [--delay MS]` | Type text (from stdin if TEXT is omitted). |
-| `reset` | Send Ctrl-Alt-Del. |
+| `reset [--fswitch N]` | Send Ctrl-Alt-Del. Firmware and Linux text consoles reboot on it, but a Linux desktop or login screen usually does not. `--fswitch N` first sends Ctrl-Alt-F`N` (1–12) and waits 1 s, so that a Linux target switches to text console `N` before the Ctrl-Alt-Del. |
 
 Global options include `-q/--quiet` (only warnings and errors are printed) and
 `--color auto|always|never`. `NO_COLOR` is respected.

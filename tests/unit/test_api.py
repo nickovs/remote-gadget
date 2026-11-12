@@ -15,6 +15,7 @@ from remote_gadget.errors import (
     RemoteError,
     SshConnectionError,
     TypingTimeoutError,
+    UsageError,
     WrongStateError,
 )
 
@@ -191,3 +192,20 @@ def test_rm():
     assert t.runs[0][0][-3:] == ["img-rm", "/d", "--recursive"]
     assert t.runs[1][0][-2:] == ["img-rm", "/f"]
     assert t.runs[0][0][0] == "python3"  # no sudo needed
+
+
+def test_reset_passes_fswitch():
+    g, t, _ = gadget(ok(), ok())
+    g.reset()
+    g.reset(fswitch=3)
+    assert "--fswitch" not in t.runs[0][0]
+    argv = t.runs[1][0]
+    assert argv[argv.index("--fswitch") + 1] == "3"
+
+
+@pytest.mark.parametrize("n", [0, 13])
+def test_reset_rejects_bad_fswitch(n):
+    g, t, _ = gadget()
+    with pytest.raises(UsageError):
+        g.reset(fswitch=n)
+    assert t.runs == []

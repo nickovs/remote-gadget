@@ -24,6 +24,7 @@ from .errors import (
     NotInitialisedError,
     RemoteError,
     SshConnectionError,
+    UsageError,
 )
 from .transport import SSH_CONNECT_FAILED, SshTransport, Transport
 
@@ -233,9 +234,16 @@ class Gadget:
             "--delay", str(delay_ms), root=True, stdin=text.encode("utf-8"),
         )  # fmt: skip
 
-    def reset(self, timeout: float = 5.0) -> dict[str, Any]:
-        """Send Ctrl-Alt-Del to the target."""
-        return self._helper("reset", "--timeout", str(timeout), root=True)
+    def reset(self, timeout: float = 5.0, fswitch: int | None = None) -> dict[str, Any]:
+        """Send Ctrl-Alt-Del to the target.
+
+        With ``fswitch`` (1-12), first send Ctrl-Alt-F<fswitch> and pause, so that a Linux
+        target switches to a text console, where the kernel acts on Ctrl-Alt-Del.
+        """
+        if fswitch is not None and not 1 <= fswitch <= 12:
+            raise UsageError(f"fswitch must be 1-12, not {fswitch}")
+        extra = [] if fswitch is None else ["--fswitch", str(fswitch)]
+        return self._helper("reset", "--timeout", str(timeout), *extra, root=True)
 
     def doctor(self, fix: bool = False) -> dict[str, Any]:
         """Diagnose (and with ``fix``, repair) the connection and the gadget host."""

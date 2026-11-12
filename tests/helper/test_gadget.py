@@ -265,3 +265,33 @@ def test_img_rm_refused_while_plugged_or_root(run, host, fake_cmd):
     _, out = run("img-rm", "/f.txt")
     assert out["error"]["code"] == "wrong_state"
     assert not [c for c in fake_cmd if c[0].startswith("m")]
+
+
+CTRL_ALT = 0x01 | 0x04
+
+
+@pytest.mark.parametrize(
+    "extra, usages, pauses",
+    [
+        ((), [0x4C], 0),
+        (("--fswitch", "3"), [0x3C, 0x4C], 1),
+        (("--fswitch", "12"), [0x45, 0x4C], 1),
+    ],
+)
+def test_reset_sends_keys(run, host, fake_cmd, helper, monkeypatch, extra, usages, pauses):
+    host.initialise()
+    run("plug")
+    host.set_udc_state("configured")
+    reader = FifoReader(host.make_hid())
+    slept = []
+    monkeypatch.setattr(helper.time, "sleep", slept.append)
+    code, out = run("reset", *extra)
+    assert code == 0, out
+    expected = b"".join(bytes([CTRL_ALT, 0, u, 0, 0, 0, 0, 0]) + bytes(8) for u in usages)
+    assert reader.close(len(expected)) == expected
+    assert slept.count(helper.VT_SWITCH_SECONDS) == pauses
+
+
+def test_reset_rejects_bad_fswitch(helper, host):
+    with pytest.raises(SystemExit):
+        helper.main(host.args("reset", "--fswitch", "13"))
