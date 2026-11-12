@@ -40,6 +40,11 @@ DEFAULT_PRODUCT_ID = 0x0104  # Multifunction Composite Gadget
 # Long enough that a host polling its hub port every few hundred ms sees the disconnect.
 MIN_UNPLUG_SECONDS = 1.0
 OVERLAY_LINE = "dtoverlay=dwc2,dr_mode=peripheral"
+# dwc2 pulls D+ up as soon as it probes, before any gadget is bound, so a target sees a
+# device that never answers and may stall its boot.  Keep it unloaded until `plug`.
+BLACKLIST_FILE = "etc/modprobe.d/remote-gadget.conf"
+BLACKLIST_TEXT = "# Added by remote-gadget: dwc2 is loaded by `plug`\nblacklist dwc2\n"
+UDC_PROBE_SECONDS = 2.0
 
 # Standard boot-protocol keyboard report descriptor (kernel Documentation/usb/gadget_hid.rst).
 KEYBOARD_REPORT_DESC = bytes.fromhex(
@@ -327,6 +332,49 @@ def fix_overlay(ctx: Ctx) -> None:
         f.write(f"\n# Added by remote-gadget\n[all]\n{OVERLAY_LINE}\n")
 
 
+def dwc2_blacklisted(ctx: Ctx) -> bool:
+    try:
+        with open(ctx.sys(BLACKLIST_FILE)) as f:
+            return any(line.split() == ["blacklist", "dwc2"] for line in f)
+    except OSError:
+        return False
+
+
+def dwc2_loaded(ctx: Ctx) -> bool:
+    return os.path.isdir(ctx.sys("sys/module/dwc2"))
+
+
+def check_blacklist(ctx: Ctx) -> Check:
+    if not pi_model(ctx):
+        return _check("dwc2-boot", "unknown", "not a Raspberry Pi; dwc2 loading not checked")
+    if dwc2_blacklisted(ctx):
+        return _check("dwc2-boot", "ok", "dwc2 not loaded at boot (loaded by plug)")
+    return _check(
+        "dwc2-boot",
+        "fail",
+        "dwc2 loads at boot, so the target sees an unresponsive device until plug",
+    )
+
+
+def fix_blacklist(ctx: Ctx) -> None:
+    path = ctx.sys(BLACKLIST_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(BLACKLIST_TEXT)
+
+
+def load_dwc2(ctx: Ctx) -> None:
+    """Load the blacklisted dwc2 module and wait for its UDC to appear."""
+    r = run_cmd(["modprobe", "dwc2"])
+    if r.returncode != 0:
+        raise HelperError(
+            "modprobe", "cannot load dwc2: " + r.stderr.decode(errors="replace").strip()
+        )
+    deadline = time.monotonic() + UDC_PROBE_SECONDS
+    while not list_udcs(ctx) and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
 def check_configfs(ctx: Ctx) -> Check:
     if os.path.isdir(ctx.sys("sys/kernel/config/usb_gadget")):
         return _check("configfs", "ok", "configfs mounted and libcomposite loaded")
@@ -357,6 +405,10 @@ def check_udc(ctx: Ctx) -> Check:
     udcs = list_udcs(ctx)
     if udcs:
         return _check("udc", "ok", "USB device controller: " + ", ".join(udcs))
+    if pi_model(ctx) and dwc2_blacklisted(ctx) and not dwc2_loaded(ctx):
+        if run_cmd(["modprobe", "-n", "-q", "dwc2"]).returncode == 0:
+            return _check("udc", "ok", "dwc2 available (loaded on plug)")
+        return _check("udc", "fail", "dwc2 kernel module not available")
     hint = "use a USB data cable in the device/OTG port"
     if pi_model(ctx):
         hint = "enable the dwc2 overlay and reboot; " + hint
@@ -411,6 +463,7 @@ CHECKS: list[tuple[Callable[[Ctx], Check], Callable[[Ctx], None] | None]] = [
     (check_platform, None),
     (check_tools, fix_tools),
     (check_overlay, fix_overlay),
+    (check_blacklist, fix_blacklist),
     (check_configfs, fix_configfs),
     (check_udc, None),
     (check_path, fix_path),
@@ -438,7 +491,9 @@ def run_checks(ctx: Ctx, fix: bool, install_packages: bool = True) -> dict[str, 
                     if fixer is fix_overlay:
                         reboot = True
         results.append(res)
-    if not list_udcs(ctx) and pi_model(ctx):
+    # With dwc2 blacklisted and unloaded, no UDC is normal: `plug` loads it.
+    unloaded = dwc2_blacklisted(ctx) and not dwc2_loaded(ctx)
+    if not list_udcs(ctx) and pi_model(ctx) and not unloaded:
         overlay = next(r for r in results if r["name"] == "boot-overlay")
         reboot = reboot or overlay["status"] == "ok"
     if reboot:
@@ -534,7 +589,7 @@ def choose_udc(ctx: Ctx, st: dict[str, Any]) -> str:
     if not udcs:
         raise HelperError(
             "no_udc",
-            "no USB device controller; dwc2 overlay not active?",
+            "no USB device controller; dwc2 overlay not active (reboot needed?)",
             "run `remote-gadget doctor`",
         )
     raise HelperError("no_udc", f"several UDCs ({', '.join(udcs)}) and none recorded")
@@ -627,6 +682,9 @@ def op_plug(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
         wait = MIN_UNPLUG_SECONDS - (time.time() - unplugged_at)
         if 0 < wait <= MIN_UNPLUG_SECONDS:
             time.sleep(wait)
+    # Load dwc2 only now, so the target sees it just before the gadget binds.
+    if not list_udcs(ctx) and pi_model(ctx) and not dwc2_loaded(ctx):
+        load_dwc2(ctx)
     udc = choose_udc(ctx, st)
     write_attr(os.path.join(ctx.gadget, "UDC"), udc)
     st["udc"] = udc

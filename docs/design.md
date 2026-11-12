@@ -374,8 +374,19 @@ first checks whether it is already done.
    `/boot/config.txt` on older releases. The edit appends a fresh `[all]` section, so earlier
    board-specific sections (the stock file has `dtoverlay=dwc2,dr_mode=host` under `[cm5]`)
    cannot override it, and a timestamped backup is made first. No `modules-load.d` entry is
-   needed: the overlay loads `dwc2`, and `plug`/`unplug` load `libcomposite`. If the overlay was added, `init` reports **reboot required** and exits with status 4.
+   needed: `plug` loads `dwc2` and `libcomposite` itself. If the overlay was added, `init` reports **reboot required** and exits with status 4.
    `--reboot` reboots the Pi straight away.
+   **Pi only:** also write `/etc/modprobe.d/remote-gadget.conf` containing `blacklist dwc2`.
+   As soon as `dwc2` probes in peripheral mode it turns on the D+ pull-up, before any gadget
+   is bound. The target then sees a full-speed device that never answers its descriptor
+   requests, and retries for about 90 s (timeouts, a port power cycle, then "unable to
+   enumerate"). Firmware booting at that moment may stall. A blacklist only stops loading
+   by alias at boot; `plug` runs `modprobe dwc2` by name just before binding the UDC, so the
+   target sees at most a brief attempt that the bind replaces. `unplug` leaves `dwc2`
+   loaded: unbinding disconnects cleanly, and unloading it may leave the pull-up on (§13).
+   `dwc2` is not in the Pi OS initramfs, so the modprobe.d file is enough. With `dwc2`
+   blacklisted and not loaded, "no UDC" is normal, so it is not taken to mean a reboot is
+   needed. If the overlay was never activated, `plug` reports it after loading `dwc2`.
    On non-Pi hosts, `init` changes no boot configuration and just checks that a UDC exists.
 4. Check that the required packages are installed (`mtools`, `dosfstools`, `python3`).
    On Debian, `apt-get install -y` is offered when `--install-packages` is given. It
@@ -488,9 +499,10 @@ the tool can fix the problem, and if not, gives a one-line suggestion for the us
 | `python3` present: ≥ 3.11 ok, 3.9–3.10 warn (best effort), < 3.9 fail | no |
 | `mtools` and `dosfstools` installed | yes (apt, Debian only) |
 | dwc2 overlay in the boot config (Pi only) | yes; reboot needed |
+| `dwc2` blacklisted so it is not loaded at boot (Pi only, §6.3) | yes (writes modprobe.d file) |
 | configfs mounted and `libcomposite` loaded or loadable (`modprobe -n`) | yes (mount / modprobe) |
 | configfs mounted at `/sys/kernel/config` | yes (mount) |
-| A UDC is present | no; explains overlay/port/cable (data cable, correct port on Pi Zero) |
+| A UDC is present, or `dwc2` is blacklisted, unloaded and loadable (`modprobe -n`) | no; explains overlay/port/cable (data cable, correct port on Pi Zero) |
 | `path` exists and is writable by the user | yes |
 | Helper version matches | yes (re-upload) |
 | The image exists and is a valid FAT (`minfo`) | no (suggests `init --reformat`) |
@@ -644,6 +656,7 @@ The API returns data and raises exceptions. All printing lives in `cli.py` and `
 | — | Added `ls`, `rm` and the `-f`, `--fix`, `--reformat`, `--timeout`, `--delay`, `--enter` options | Needed for the listed commands to be usable and safe. |
 | Config "precedence" | Each profile is taken whole from the nearest file that defines it | Decision by the author. (An earlier draft merged key by key.) |
 | — | Added `config` to create and edit profiles (§5.4) | Requested. |
+| — | `dwc2` is blacklisted at boot and loaded by `plug` (§6.3) | Found on hardware: with `dwc2` loaded but no gadget bound, the target retries enumeration for about 90 s and its boot can stall. |
 
 ---
 
@@ -658,16 +671,35 @@ The API returns data and raises exceptions. All printing lives in `cli.py` and `
    decide whether the `unplug` check becomes an error for dwc2.
    One unexplained reading: once, three seconds after `plug`, `state` said `not attached`
    although the Pi's log showed the host enumerating the device. It may just be a slow target.
-2. **Minimum time unplugged:** check that 1 s is enough for UEFI firmware, which may poll
-   hub ports less often than an OS does.
-3. **`ckbcomp` output:** *checked* on trixie for us, gb, de and fr. Recorded output is in
+2. **dwc2 at boot.** *Checked* on a Pi Zero 2 W into a Linux target: with `dwc2` loaded
+   at boot (or reloaded later), the target logged `device descriptor read/64, error -110`
+   and `device not accepting address, error -62` for about 90 s, then gave up. Loading
+   `dwc2` and binding straight away gave one full-speed attempt that a clean high-speed
+   enumeration replaced 2 s later. With the blacklist, *checked*: Pi reboots and cold
+   boots, both bus-powered and externally powered, leave the target quiet until `plug`,
+   which then enumerates first time at high speed. The target (EDK II firmware) boots
+   normally with the gadget plugged, into Linux and into the EFI shell. The firmware adds
+   an `auto_created_boot_option` entry for the gadget at the end of `BootOrder`. The
+   target also boots with nothing seen while the Pi is `unplugged` with `dwc2` loaded, and
+   the cable can be attached while `plugged`; both then enumerate first time. A bus-powered
+   Pi keeps power through a warm reboot of the target and is enumerated by both the
+   firmware and Linux. A full power-off of the target cuts a bus-powered Pi's power; on
+   power-on the Pi boots during the target's POST and the target sees nothing until
+   `plug`, which enumerates first time. After `rmmod dwc2` the
+   target seemed to keep seeing a device; not yet confirmed.
+3. **Minimum time unplugged:** *checked* on one EDK II target in the EFI shell:
+   `unplug`, `write`, `plug`, then `map -r` found the drive again and read the new file.
+   Other firmware may poll hub ports less often.
+4. **`ckbcomp` output:** *checked* on trixie for us, gb, de and fr. Recorded output is in
    `tests/fixtures/ckbcomp/`. `ckbcomp` takes about 1 s on a Zero 2 W, so parsed maps are
    cached in `<path>/keymaps/` until the XKB data changes.
-4. **Typing on a real target:** *checked* on macOS with the built-in `us` map. A
+5. **Typing on a real target:** *checked* on macOS with the built-in `us` map. A
    70-character string covering letters, digits, Shift symbols and space arrived exactly.
-   Not yet tried: other layouts on a real target, `reset`, and the timeout path
-   against a real host.
-5. **Storage in both directions:** *checked* with a macOS target. A file written by `write`
+   In the EDK II EFI shell, `type` worked for letters, digits and Shift symbols, before
+   and after a re-plug (typing `reset` rebooted the target).
+   Not yet tried: other layouts on a real target, the `reset` command, and the timeout
+   path against a real host.
+6. **Storage in both directions:** *checked* with a macOS target. A file written by `write`
    while unplugged read back identically on the Mac after `plug --rw`. A file the Mac wrote
    (then ejected) read back identically with `read` after `unplug`. `fsck.vfat -n` found the
    image clean afterwards. The target must eject before `unplug`; this is documented in the

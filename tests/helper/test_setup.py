@@ -49,8 +49,9 @@ def test_setup_enables_overlay_and_creates_image(run, pi, fake_cmd, helper, monk
     res = out["result"]
     assert res["reboot_required"] is True
     udc = next(c for c in res["checks"] if c["name"] == "udc")
-    assert udc["status"] == "warn"  # expected until the reboot, so not an error
+    assert udc["status"] != "fail"  # expected until the reboot, so not an error
     assert helper.OVERLAY_LINE in (pi.root / "boot/firmware/config.txt").read_text()
+    assert "blacklist dwc2" in (pi.root / helper.BLACKLIST_FILE).read_text()
     assert list((pi.root / "boot/firmware").glob("config.txt.rgadget-*"))
     assert (pi.path / "image.img").stat().st_size == 16 << 20
     assert any(c[0] == "mkfs.vfat" for c in fake_cmd)
@@ -100,3 +101,52 @@ def test_doctor_marks_non_pi_unknown(run, host, fake_cmd):
     assert checks["boot-overlay"]["status"] == "unknown"
     assert checks["platform"]["status"] == "warn"
     assert out["result"]["debian"] is False
+
+
+def test_doctor_flags_dwc2_loading_at_boot(run, pi, fake_cmd, helper):
+    _code, out = run("doctor")
+    checks = {c["name"]: c for c in out["result"]["checks"]}
+    assert checks["dwc2-boot"]["status"] == "fail"
+    (pi.root / "etc/modprobe.d").mkdir()
+    (pi.root / helper.BLACKLIST_FILE).write_text(helper.BLACKLIST_TEXT)
+    _code, out = run("doctor")
+    checks = {c["name"]: c for c in out["result"]["checks"]}
+    assert checks["dwc2-boot"]["status"] == "ok"
+
+
+def test_doctor_accepts_no_udc_while_dwc2_unloaded(run, pi, fake_cmd, helper, monkeypatch):
+    monkeypatch.setattr(helper, "which", lambda name: "/usr/bin/" + name)
+    shutil.rmtree(pi.udc_dir)
+    (pi.root / "etc/modprobe.d").mkdir()
+    (pi.root / helper.BLACKLIST_FILE).write_text(helper.BLACKLIST_TEXT)
+    (pi.root / "boot/firmware/config.txt").write_text(STOCK_CONFIG + helper.OVERLAY_LINE + "\n")
+    _code, out = run("doctor")
+    udc = next(c for c in out["result"]["checks"] if c["name"] == "udc")
+    assert udc["status"] == "ok" and "plug" in udc["message"]
+    assert out["result"]["reboot_required"] is False
+
+
+def test_plug_loads_dwc2_before_binding(run, pi, fake_cmd):
+    pi.initialise()
+    shutil.rmtree(pi.udc_dir)
+
+    def reply(cmd):
+        if cmd == ["modprobe", "dwc2"]:
+            pi.udc_dir.mkdir()
+            pi.set_udc_state("not attached")
+        return completed()
+
+    fake_cmd.reply = reply
+    code, out = run("plug")
+    assert code == 0, out
+    assert ["modprobe", "dwc2"] in fake_cmd
+    assert pi.attr("UDC") == pi.udc_dir.name
+
+
+def test_plug_reports_dwc2_load_failure(run, pi, fake_cmd):
+    pi.initialise()
+    shutil.rmtree(pi.udc_dir)
+    fake_cmd.reply = lambda cmd: completed(returncode=1, stderr="not found")
+    code, out = run("plug")
+    assert code == 1
+    assert out["error"]["code"] == "modprobe"
