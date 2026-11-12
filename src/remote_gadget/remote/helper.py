@@ -1117,12 +1117,17 @@ def emit(payload: dict[str, Any]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    ctx = Ctx(path=args.path, sysroot=args.sysroot)
-    if args.expect_version and args.expect_version != own_version():
+    # Check the version before parsing the rest, so that an old helper given options it
+    # does not know still reports a mismatch (and gets replaced) instead of a usage error.
+    pre = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    pre.add_argument("--expect-version")
+    expect = pre.parse_known_args(argv)[0].expect_version
+    if expect and expect != own_version():
         error: dict[str, Any] = {"code": "version_mismatch", "message": "helper is out of date"}
         emit({"ok": False, "error": error, "warnings": []})
         return EXIT_VERSION
+    args = build_parser().parse_args(argv)
+    ctx = Ctx(path=args.path, sysroot=args.sysroot)
     try:
         result = args.func(ctx, args)
     except HelperError as e:

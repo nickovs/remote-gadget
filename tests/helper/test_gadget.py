@@ -22,6 +22,13 @@ def test_version_mismatch(helper, host, capsys):
     assert '"version_mismatch"' in capsys.readouterr().out
 
 
+def test_version_mismatch_wins_over_unknown_options(helper, host, capsys):
+    # A newer client may pass options this helper does not know yet.
+    code = helper.main(["--expect-version", "nope", *host.args("state", "--no-such-option")])
+    assert code == helper.EXIT_VERSION
+    assert '"version_mismatch"' in capsys.readouterr().out
+
+
 def test_plug_builds_gadget_and_binds(run, host, fake_cmd):
     host.initialise()
     code, out = run("plug")
