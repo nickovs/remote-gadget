@@ -18,9 +18,11 @@ from __future__ import annotations
 import argparse
 import contextlib
 import errno
+import grp
 import hashlib
 import json
 import os
+import pwd
 import re
 import select
 import shutil
@@ -450,6 +452,38 @@ def check_image(ctx: Ctx) -> Check:
     return _check("image", "ok", f"{ctx.image} ({os.path.getsize(ctx.image) >> 20} MiB)")
 
 
+SERIAL_GROUP = "dialout"  # owns /dev/ttyGS0 on Debian-family systems
+
+
+def ssh_user() -> tuple[str, int]:
+    """Name and uid of the real (pre-sudo) user."""
+    uid = owner_ids()[0]
+    return pwd.getpwuid(uid).pw_name, uid
+
+
+def check_serial_group(ctx: Ctx) -> Check:
+    name, uid = ssh_user()
+    try:
+        group = grp.getgrnam(SERIAL_GROUP)
+    except KeyError:
+        return _check("serial-group", "unknown", f"no {SERIAL_GROUP} group on this system")
+    if uid == 0 or name in group.gr_mem or pwd.getpwuid(uid).pw_gid == group.gr_gid:
+        # Group changes only reach new logins; say so when fixing under sudo.
+        note = " (applies to new logins)" if os.environ.get("SUDO_USER") else ""
+        return _check("serial-group", "ok", f"{name} can use /dev/ttyGS0{note}")
+    return _check(
+        "serial-group",
+        "fail",
+        f"{name} is not in the {SERIAL_GROUP} group, so cannot use /dev/ttyGS0 without sudo",
+    )
+
+
+def fix_serial_group(ctx: Ctx) -> None:
+    r = run_cmd(["usermod", "-a", "-G", SERIAL_GROUP, ssh_user()[0]])
+    if r.returncode != 0:
+        raise HelperError("usermod", "usermod failed: " + r.stderr.decode(errors="replace").strip())
+
+
 def check_keymaps(ctx: Ctx) -> Check:
     if which("ckbcomp"):
         return _check("keymaps", "ok", "ckbcomp available; any installed XKB layout can be used")
@@ -471,6 +505,7 @@ CHECKS: list[tuple[Callable[[Ctx], Check], Callable[[Ctx], None] | None]] = [
     (check_configfs, fix_configfs),
     (check_udc, None),
     (check_path, fix_path),
+    (check_serial_group, fix_serial_group),
     (check_keymaps, None),
 ]
 

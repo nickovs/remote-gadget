@@ -12,7 +12,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -32,6 +32,23 @@ def _load() -> ModuleType:
 @pytest.fixture
 def helper() -> ModuleType:
     return _load()
+
+
+@pytest.fixture(autouse=True)
+def serial_group(helper: ModuleType, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """A fake dialout group (containing the current user), so checks do not depend on the
+    machine running the tests.  Tests can empty ``gr_mem`` to make the user a non-member."""
+    group = SimpleNamespace(
+        gr_name="dialout", gr_gid=-1, gr_mem=[helper.pwd.getpwuid(os.getuid()).pw_name]
+    )
+
+    def getgrnam(name: str) -> SimpleNamespace:
+        if name != group.gr_name:
+            raise KeyError(name)
+        return group
+
+    monkeypatch.setattr(helper.grp, "getgrnam", getgrnam)
+    return group
 
 
 class FakeHost:

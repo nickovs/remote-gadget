@@ -536,6 +536,7 @@ the tool can fix the problem, and if not, gives a one-line suggestion for the us
 | configfs mounted at `/sys/kernel/config` | yes (mount) |
 | A UDC is present, or `dwc2` is blacklisted, unloaded and loadable (`modprobe -n`) | no; explains overlay/port/cable (data cable, correct port on Pi Zero) |
 | `path` exists and is writable by the user | yes |
+| The ssh user is in the `dialout` group, which owns `/dev/ttyGS0` (read from the group database, so a fix shows at once but only applies to new logins; `unknown` if there is no such group) | yes (`usermod -a -G dialout USER`) |
 | Helper version matches | yes (re-upload) |
 | The image exists and is a valid FAT (`minfo`) | no (suggests `init --reformat`) |
 | The gadget's configfs tree matches the expected one | yes (rebuild while stopped) |

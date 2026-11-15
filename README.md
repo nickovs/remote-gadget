@@ -28,7 +28,9 @@ Python helper, uploaded by `init`, builds a USB gadget through configfs with:
 * a **boot-protocol keyboard** (HID), and
 * a **serial port** (CDC-ACM). It is `/dev/ttyGS0` on the Pi, and typically `/dev/ttyACM0`
   on a Linux target, `/dev/cu.usbmodem*` on a Mac or a COM port on Windows. The tool only
-  presents the port: ssh to the Pi to use it, for example with `screen /dev/ttyGS0`.
+  presents the port: ssh to the Pi to use it, for example with `screen /dev/ttyGS0`. The
+  port belongs to the `dialout` group; `doctor --fix` adds the ssh user to it, which takes
+  effect at the next login.
 
 The gadget works like a USB card reader with a keyboard attached. `start` and `stop`
 connect and disconnect the whole device: `stop` turns off the data-line pull-up, so the
@@ -110,7 +112,7 @@ remote-gadget [global options] <command> [options]
 |---------|--------------|
 | `config -p NAME [settings] [--update\|--overwrite] [--user] [--unset KEY]` | Create or change a profile (see Configuration). |
 | `init [--install-packages] [--reboot] [--reformat -y]` | Set up the Pi: dwc2 overlay (with `dwc2` loaded by `start`, not at boot), packages, state dir, storage image. Safe to re-run. Exit status 4 means a reboot is needed. |
-| `doctor [--fix]` | Check connectivity, sudo, packages, overlay, dwc2 boot loading, UDC and image, and fix what it can. |
+| `doctor [--fix]` | Check connectivity, sudo, packages, overlay, dwc2 boot loading, UDC, image and `dialout` group membership (for the serial port), and fix what it can. |
 | `state` | Show `uninitialised`, `stopped` or `started` (with whether the target has configured the device), the media (`inserted read-only`, `inserted read-write` or `ejected`), and free space. |
 | `start` | Connect to the target. The media is as you last left it (ejected on a fresh install), even after the Pi reboots. |
 | `stop` | Disconnect from the target, as if the cable had been pulled out. |

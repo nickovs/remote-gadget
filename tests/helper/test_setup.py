@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 
 import pytest
@@ -150,3 +151,39 @@ def test_start_reports_dwc2_load_failure(run, pi, fake_cmd):
     code, out = run("start")
     assert code == 1
     assert out["error"]["code"] == "modprobe"
+
+
+def test_serial_group_check_and_fix(run, pi, fake_cmd, helper, serial_group):
+    user = helper.pwd.getpwuid(os.getuid()).pw_name
+    serial_group.gr_mem = []
+    _code, out = run("doctor")
+    check = next(c for c in out["result"]["checks"] if c["name"] == "serial-group")
+    assert check["status"] == "fail" and "dialout" in check["message"]
+
+    def reply(cmd):
+        if cmd[0] == "usermod":
+            serial_group.gr_mem.append(cmd[-1])
+        return completed()
+
+    fake_cmd.reply = reply
+    _code, out = run("doctor", "--fix")
+    check = next(c for c in out["result"]["checks"] if c["name"] == "serial-group")
+    assert (check["status"], check["fixed"]) == ("ok", True)
+    assert ["usermod", "-a", "-G", "dialout", user] in fake_cmd
+
+
+def test_serial_group_check_uses_the_sudo_user(helper, monkeypatch, serial_group):
+    monkeypatch.setattr(helper, "owner_ids", lambda: (os.getuid(), os.getgid()))
+    monkeypatch.setenv("SUDO_USER", "someone")
+    assert "new logins" in helper.check_serial_group(helper.Ctx())["message"]
+
+
+def test_serial_group_missing_is_unknown(helper, serial_group):
+    serial_group.gr_name = "something-else"
+    assert helper.check_serial_group(helper.Ctx())["status"] == "unknown"
+
+
+def test_serial_group_fix_reports_usermod_failure(helper, fake_cmd):
+    fake_cmd.reply = lambda cmd: completed(returncode=6, stderr="user does not exist")
+    with pytest.raises(helper.HelperError, match="user does not exist"):
+        helper.fix_serial_group(helper.Ctx())
