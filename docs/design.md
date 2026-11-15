@@ -13,8 +13,10 @@ Where it differs from that outline, §12 says how and why.
 small Linux board, usually a Raspberry Pi, that is plugged into a **target** computer
 over USB and acts as a USB *gadget*. The gadget appears to the target as:
 
-* a **USB mass-storage device**, backed by a FAT image file on the Pi, and
-* a **USB keyboard** (HID boot keyboard).
+* a **USB mass-storage device**, backed by a FAT image file on the Pi,
+* a **USB keyboard** (HID boot keyboard), and
+* a **USB serial port** (CDC-ACM), which is `/dev/ttyGS0` on the Pi. The tool only presents
+  it; anyone who can ssh to the Pi can use it as they like.
 
 The user's machine (the **client**) drives the Pi (the **gadget host**) over `ssh`/`scp`.
 Typical uses: getting files onto or off a machine that has no network, and typing into
@@ -35,7 +37,9 @@ BIOS/UEFI setup screens, installers or login prompts.
 
 ### Out of scope
 
-* Mouse/absolute-pointer HID, network gadgets (ECM/RNDIS), serial gadgets.
+* Mouse/absolute-pointer HID, network gadgets (ECM/RNDIS).
+* Using the serial port from the client (for example a `console` command or a getty on
+  `/dev/ttyGS0`); the port is only presented.
 * Restoring the gadget automatically after the gadget host reboots (see §6.3).
 * Non-FAT storage images.
 * Windows as a client platform. It may work, but it is not tested.
@@ -63,6 +67,7 @@ BIOS/UEFI setup screens, installers or login prompts.
 | R15 | `mount` can show the storage to the target as read-only. |
 | R17 | The media state (inserted read-only, inserted read-write, ejected) is remembered across `stop`/`start` and gadget-host reboots. A fresh install starts ejected. |
 | R16 | The USB vendor and product IDs can optionally be configured. |
+| R18 | The gadget always includes a CDC-ACM serial function (`/dev/ttyGS0` on the Pi); no option enables or disables it. |
 
 ---
 
@@ -271,12 +276,15 @@ cannot be reconfigured at runtime.
 /sys/kernel/config/usb_gadget/rgadget/
     idVendor  <vendor_id>   idProduct <product_id>   (default: Linux Foundation "Multifunction Composite Gadget")
     bcdDevice 0x0100   bcdUSB 0x0200
+    bDeviceClass 0xef  bDeviceSubClass 0x02  bDeviceProtocol 0x01   (interface association, see below)
     strings/0x409/{manufacturer,product,serialnumber}   ("remote-gadget", "remote-gadget", from machine-id)
-    configs/c.1/  MaxPower 250, strings/0x409/configuration
+    configs/c.1/  MaxPower 250, strings/0x409/configuration ("keyboard+storage+serial")
     functions/hid.usb0/          protocol 1, subclass 1, report_length 8, report_desc = boot keyboard
     functions/mass_storage.usb0/ stall 1, lun.0/{file=<path>/image.img, removable 1, ro 0|1}
     configs/c.1/hid.usb0 -> functions/hid.usb0
+    functions/acm.usb0/          CDC-ACM serial, /dev/ttyGS0 on the gadget host
     configs/c.1/mass_storage.usb0 -> functions/mass_storage.usb0
+    configs/c.1/acm.usb0 -> functions/acm.usb0
     UDC                          ("" = stopped, "<udc name>" = started)
 ```
 
@@ -290,6 +298,19 @@ plugged in or not, with or without a card in it:
 
 `state` reports `uninitialised` if `<path>/state.json` is missing or invalid. Otherwise
 it reports the connection and the media, and, when started, the target status.
+
+**Serial port.** CDC-ACM uses two interfaces (control and data) joined by an interface
+association descriptor (IAD). USB-IF asks a device with an IAD to declare device class
+`0xef`/`0x02`/`0x01` (Miscellaneous, Common Class, IAD), so that Windows loads its
+composite driver; Linux and macOS work either way. The ACM function is linked last, so
+the keyboard and the drive keep interface numbers 0 and 1. The gadget then uses seven
+endpoints besides endpoint 0 (HID in and out, storage in and out, ACM notify, in and
+out), which fits the dwc2 controller on the Pi (8 endpoint numbers, 7 transmit FIFOs on a
+Zero 2 W). Rejected alternatives: the generic serial function (`gser`), which needs a
+special driver on Windows and macOS; and making the port optional, which would add a
+setting with no clear use, since the port costs nothing when unused. A gadget built by
+an older version gains the port the next time it is built, which `start` does whenever
+the gadget is stopped.
 
 **Building the gadget** is an internal step. `start` runs `modprobe libcomposite` and then
 builds the configfs tree if it does not exist (for example after a reboot). It is
@@ -736,7 +757,13 @@ Results recorded before the start/stop and mount/eject split use the old command
    after `insert`, `map -r` is needed, and without it the shell silently serves the old
    contents. A `map -r` while ejected renumbers the other drives, so `fs0:` can become the
    internal disk.
-7. **Storage in both directions:** *checked* with a macOS target. A file written by `write`
+7. **Serial port.** *Checked* on a Pi Zero 2 W into Ubuntu 26.04: with the ACM function
+   added, the target enumerates four interfaces (HID 0, storage 1, ACM 2 and 3) on seven
+   endpoints, `cdc_acm` creates `/dev/ttyACM0`, and data passes both ways between it and
+   `/dev/ttyGS0`. The keyboard and drive still work in Linux and in the EDK II EFI shell
+   with device class `0xef`, and the target boots normally with the gadget attached.
+   Not yet tried: Windows and macOS targets.
+8. **Storage in both directions:** *checked* with a macOS target. A file written by `write`
    while unplugged read back identically on the Mac after `plug --rw`. A file the Mac wrote
    (then ejected) read back identically with `read` after `unplug`. `fsck.vfat -n` found the
    image clean afterwards. The target must eject before `unplug`; this is documented in the

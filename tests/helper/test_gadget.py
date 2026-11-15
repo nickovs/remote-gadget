@@ -49,6 +49,21 @@ def test_start_builds_gadget_ejected_and_binds(run, host, fake_cmd):
     assert host.state()["udc"] == UDC
 
 
+def test_start_adds_serial_port_to_an_existing_gadget(run, host, fake_cmd, helper):
+    """A gadget built before the serial port existed gains it on the next start."""
+    host.initialise()
+    run("start")
+    run("stop")
+    (host.gadget / "configs/c.1/acm.usb0").unlink()
+    (host.gadget / "functions/acm.usb0").rmdir()
+    code, _ = run("start")
+    assert code == 0
+    assert (host.gadget / "configs/c.1/acm.usb0").resolve() == host.gadget / "functions/acm.usb0"
+    assert [host.attr(a) for a in ("bDeviceClass", "bDeviceSubClass", "bDeviceProtocol")] == [
+        "0xef", "0x02", "0x01"
+    ]  # fmt: skip
+
+
 def test_start_is_idempotent(run, host, fake_cmd):
     host.initialise()
     run("start")

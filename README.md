@@ -1,7 +1,7 @@
 # remote-gadget
 
 Control a Raspberry Pi (or any Linux board with a USB device controller) that is
-plugged into another computer as a **USB keyboard + USB drive**, over `ssh`.
+plugged into another computer as a **USB keyboard + USB drive + serial port**, over `ssh`.
 
 Use it to get files onto or off a machine with no network, or to type into BIOS/UEFI
 setup screens, installers and login prompts.
@@ -24,8 +24,11 @@ lab-pi: media ejected
 The client runs `ssh`/`scp` to the gadget host (the Pi). There, a small stdlib-only
 Python helper, uploaded by `init`, builds a USB gadget through configfs with:
 
-* a **mass-storage** function backed by a FAT image file, and
-* a **boot-protocol keyboard** (HID).
+* a **mass-storage** function backed by a FAT image file,
+* a **boot-protocol keyboard** (HID), and
+* a **serial port** (CDC-ACM). It is `/dev/ttyGS0` on the Pi, and typically `/dev/ttyACM0`
+  on a Linux target, `/dev/cu.usbmodem*` on a Mac or a COM port on Windows. The tool only
+  presents the port: ssh to the Pi to use it, for example with `screen /dev/ttyGS0`.
 
 The gadget works like a USB card reader with a keyboard attached. `start` and `stop`
 connect and disconnect the whole device: `stop` turns off the data-line pull-up, so the

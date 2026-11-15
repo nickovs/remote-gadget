@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     common = _global_options()
     p = argparse.ArgumentParser(
         prog="remote-gadget",
-        description="Control a Raspberry Pi USB gadget (keyboard + storage) over ssh.",
+        description="Control a Raspberry Pi USB gadget (keyboard, storage and serial) over ssh.",
         parents=[common],
     )
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

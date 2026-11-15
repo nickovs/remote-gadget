@@ -642,6 +642,11 @@ def ensure_gadget(ctx: Ctx, vendor_id: int, product_id: int, media: dict[str, bo
     write_attr(os.path.join(g, "idProduct"), f"0x{product_id:04x}")
     write_attr(os.path.join(g, "bcdDevice"), "0x0100")
     write_attr(os.path.join(g, "bcdUSB"), "0x0200")
+    # Miscellaneous / Common Class / Interface Association: ACM's two interfaces are
+    # joined by an IAD, and Windows only loads its composite driver for this class.
+    for k, v in (("bDeviceClass", "0xef"), ("bDeviceSubClass", "0x02"),
+                 ("bDeviceProtocol", "0x01")):  # fmt: skip
+        write_attr(os.path.join(g, k), v)
     strings = os.path.join(g, "strings/0x409")
     os.makedirs(strings, exist_ok=True)
     serial = read_attr(ctx.sys("etc/machine-id"))[:16] or "0"
@@ -651,7 +656,7 @@ def ensure_gadget(ctx: Ctx, vendor_id: int, product_id: int, media: dict[str, bo
     cfg = os.path.join(g, "configs/c.1")
     os.makedirs(os.path.join(cfg, "strings/0x409"), exist_ok=True)
     write_attr(os.path.join(cfg, "MaxPower"), 250)
-    write_attr(os.path.join(cfg, "strings/0x409/configuration"), "keyboard+storage")
+    write_attr(os.path.join(cfg, "strings/0x409/configuration"), "keyboard+storage+serial")
 
     # Function attributes are locked (EBUSY) once linked, so only set them on creation.
     hid = os.path.join(g, "functions/hid.usb0")
@@ -670,7 +675,9 @@ def ensure_gadget(ctx: Ctx, vendor_id: int, product_id: int, media: dict[str, bo
         write_attr(os.path.join(lun_dir(ctx), "ro"), int(media["ro"]))
         if media["inserted"]:
             write_attr(os.path.join(lun_dir(ctx), "file"), ctx.image)
-    for func in ("hid.usb0", "mass_storage.usb0"):
+    os.makedirs(os.path.join(g, "functions/acm.usb0"), exist_ok=True)  # /dev/ttyGS0
+    # Link order sets interface numbers; serial goes last so the others keep 0 and 1.
+    for func in ("hid.usb0", "mass_storage.usb0", "acm.usb0"):
         link = os.path.join(cfg, func)
         if not os.path.islink(link):
             os.symlink(os.path.join(g, "functions", func), link)

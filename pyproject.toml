@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "remote-gadget"
 version = "0.1.0"
-description = "Manage a Raspberry Pi USB gadget (keyboard + storage) over ssh"
+description = "Manage a Raspberry Pi USB gadget (keyboard, storage and serial) over ssh"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
