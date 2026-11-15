@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import os
+import shutil
 import sys
 
 import pytest
@@ -29,87 +31,177 @@ def test_version_mismatch_wins_over_unknown_options(helper, host, capsys):
     assert '"version_mismatch"' in capsys.readouterr().out
 
 
-def test_plug_builds_gadget_and_binds(run, host, fake_cmd):
+LUN = "functions/mass_storage.usb0/lun.0"
+
+
+def test_start_builds_gadget_ejected_and_binds(run, host, fake_cmd):
     host.initialise()
-    code, out = run("plug")
-    assert (code, out["result"]) == (0, {"state": "plugged", "ro": False, "changed": True})
+    code, out = run("start")
+    assert (code, out["result"]) == (
+        0, {"state": "started", "changed": True, "media": {"inserted": False, "ro": False}}
+    )  # fmt: skip
     assert host.attr("UDC") == UDC
     assert host.attr("idVendor") == "0x1d6b"
-    assert host.attr("functions/mass_storage.usb0/lun.0/file") == str(host.path / "image.img")
+    assert not (host.gadget / LUN / "file").exists()  # a fresh install starts ejected
+    assert host.attr(f"{LUN}/removable") == "1"
     assert (host.gadget / "functions/hid.usb0/report_desc").read_bytes()[:2] == b"\x05\x01"
     assert os.path.islink(host.gadget / "configs/c.1/hid.usb0")
     assert host.state()["udc"] == UDC
 
 
-def test_plug_is_idempotent(run, host, fake_cmd):
+def test_start_is_idempotent(run, host, fake_cmd):
     host.initialise()
-    run("plug")
-    code, out = run("plug")
+    run("start")
+    code, out = run("start")
     assert code == 0 and out["result"]["changed"] is False
-
-
-def test_plug_with_other_mode_while_plugged_fails(run, host, fake_cmd):
-    host.initialise()
-    run("plug")
-    code, out = run("plug", "--ro")
-    assert code == 1
-    assert out["error"]["code"] == "wrong_state"
 
 
 def test_custom_ids(run, host, fake_cmd):
     host.initialise()
-    run("plug", "--vendor-id", "0x1234", "--product-id", "0x5678")
+    run("start", "--vendor-id", "0x1234", "--product-id", "0x5678")
     assert (host.attr("idVendor"), host.attr("idProduct")) == ("0x1234", "0x5678")
 
 
-def test_unplug_unbinds_and_records_time(run, host, fake_cmd):
+def test_stop_unbinds_and_records_time(run, host, fake_cmd):
     host.initialise()
-    run("plug")
-    code, out = run("unplug")
+    run("start")
+    code, out = run("stop")
     assert (code, out["result"]["changed"], out["warnings"]) == (0, True, [])
     assert host.attr("UDC") == ""
-    assert host.state()["unplugged_at"] > 0
-    code, out = run("unplug")
+    assert host.state()["stopped_at"] > 0
+    code, out = run("stop")
     assert out["result"]["changed"] is False
 
 
-def test_unplug_warns_if_udc_still_attached(run, host, fake_cmd):
+def test_stop_warns_if_udc_still_attached(run, host, fake_cmd):
     host.initialise()
-    run("plug")
+    run("start")
     host.set_udc_state("configured")
-    code, out = run("unplug")
+    code, out = run("stop")
     assert code == 0
     assert "may still see the device" in out["warnings"][0]
 
 
-def test_unplug_starts_a_stopped_gadget(run, host, fake_cmd):
+def test_stop_of_never_built_gadget_is_a_no_op(run, host, fake_cmd):
     host.initialise()
-    code, out = run("unplug")
-    assert (code, out["result"]["state"]) == (0, "unplugged")
-    assert host.gadget.is_dir()
+    code, out = run("stop")
+    assert (code, out["result"]) == (0, {"state": "stopped", "changed": False})
+    assert not host.gadget.exists()
 
 
-def test_read_only_plug_cycles_lun_file(run, host, fake_cmd, helper, monkeypatch):
+def test_start_waits_out_minimum_stop_time(run, host, fake_cmd, helper, monkeypatch):
+    host.initialise(stopped_at=helper.time.time())
+    slept = []
+    monkeypatch.setattr(helper.time, "sleep", slept.append)
+    run("start")
+    assert slept and 0 < slept[0] <= helper.MIN_STOP_SECONDS
+
+
+@pytest.mark.parametrize("ro", [False, True])
+def test_mount_while_started_sets_ro_then_file(run, host, fake_cmd, helper, monkeypatch, ro):
     host.initialise()
-    run("plug")
-    run("unplug")
+    run("start")
     writes = []
     real = helper.write_attr
     monkeypatch.setattr(helper, "write_attr", lambda p, v: (writes.append((p, v)), real(p, v)))
-    monkeypatch.setattr(helper.time, "sleep", lambda s: None)
-    _code, out = run("plug", "--ro")
-    assert out["result"]["ro"] is True
-    lun = str(host.gadget / "functions/mass_storage.usb0/lun.0")
-    lun_writes = [(os.path.basename(p), v) for p, v in writes if p.startswith(lun)]
-    assert lun_writes == [("file", ""), ("ro", 1), ("file", str(host.path / "image.img"))]
+    code, out = run("mount", *(["--ro"] if ro else []))
+    assert (code, out["result"]) == (0, {"media": {"inserted": True, "ro": ro}, "changed": True})
+    lun_writes = [(os.path.basename(p), v) for p, v in writes if p.startswith(str(host.gadget))]
+    assert lun_writes == [("ro", int(ro)), ("file", str(host.image))]
+    assert host.state()["media"] == {"inserted": True, "ro": ro}
+    code, out = run("mount", *(["--ro"] if ro else []))
+    assert (code, out["result"]["changed"]) == (0, False)
 
 
-def test_plug_waits_out_minimum_unplug_time(run, host, fake_cmd, helper, monkeypatch):
-    host.initialise(unplugged_at=helper.time.time())
-    slept = []
-    monkeypatch.setattr(helper.time, "sleep", slept.append)
-    run("plug")
-    assert slept and 0 < slept[0] <= helper.MIN_UNPLUG_SECONDS
+def test_mount_in_other_mode_needs_eject(run, host, fake_cmd):
+    host.initialise()
+    run("start")
+    run("mount")
+    code, out = run("mount", "--ro")
+    assert (code, out["error"]["code"]) == (1, "wrong_state")
+    assert "eject" in out["error"]["hint"]
+
+
+def test_mount_needs_an_image(run, host, fake_cmd):
+    host.initialise()
+    host.image.unlink()
+    code, out = run("mount")
+    assert (code, out["error"]["code"]) == (1, "no_image")
+
+
+def test_media_state_survives_rebuild(run, host, fake_cmd):
+    """Media set while the gadget does not exist (e.g. after a reboot) is applied by start."""
+    host.initialise()
+    code, _ = run("mount", "--ro")
+    assert code == 0 and not host.gadget.exists()
+    run("start")
+    assert host.attr(f"{LUN}/file") == str(host.image)
+    assert host.attr(f"{LUN}/ro") == "1"
+    run("stop")
+    shutil.rmtree(host.gadget)  # what a reboot does to configfs
+    run("start")
+    assert (host.attr(f"{LUN}/file"), host.attr(f"{LUN}/ro")) == (str(host.image), "1")
+
+
+def test_eject_clears_lun_and_state(run, host, fake_cmd):
+    host.initialise()
+    run("start")
+    run("mount")
+    code, out = run("eject")
+    assert (code, out["result"]) == (
+        0,
+        {"media": {"inserted": False, "ro": False}, "changed": True},
+    )
+    assert host.attr(f"{LUN}/file") == ""
+    assert host.state()["media"]["inserted"] is False
+    code, out = run("eject")
+    assert out["result"]["changed"] is False
+
+
+def test_eject_reports_locked_media(run, host, fake_cmd, helper, monkeypatch):
+    host.initialise()
+    run("start")
+    run("mount")
+    lun_file = str(host.gadget / LUN / "file")
+
+    def locked_open(path, mode="r", *a, **kw):
+        if path == lun_file and "w" in mode:
+            raise OSError(errno.EBUSY, "Device or resource busy")
+        return open(path, mode, *a, **kw)
+
+    monkeypatch.setattr(helper, "open", locked_open, raising=False)
+    code, out = run("eject")
+    assert (code, out["error"]["code"]) == (1, "media_locked")
+    assert "--force" in out["error"]["hint"]
+    assert host.state()["media"]["inserted"] is True
+
+
+def test_eject_force_uses_forced_eject(run, host, fake_cmd, helper, monkeypatch):
+    host.initialise()
+    run("start")
+    run("mount")
+    real = helper.write_attr
+
+    def kernel(path, value):
+        real(path, value)
+        if path.endswith("forced_eject"):  # what the kernel does
+            real(os.path.join(os.path.dirname(path), "file"), "")
+
+    monkeypatch.setattr(helper, "write_attr", kernel)
+    code, out = run("eject", "--force")
+    assert code == 0, out
+    assert host.attr(f"{LUN}/forced_eject") == "1"
+    assert host.attr(f"{LUN}/file") == ""
+
+
+def test_target_initiated_eject_is_seen_and_saved(run, host, fake_cmd):
+    host.initialise()
+    run("start")
+    run("mount")
+    (host.gadget / LUN / "file").write_text("\n")  # the target ejected the media
+    _code, out = run("state")
+    assert out["result"]["inserted"] is False
+    assert host.state()["media"]["inserted"] is False
 
 
 def test_state(run, host, fake_cmd):
@@ -117,21 +209,30 @@ def test_state(run, host, fake_cmd):
     fake_cmd.reply = lambda cmd: completed("      1 234 567 bytes free\n")
     _, out = run("state")
     assert out["result"]["state"] == "stopped"
+    assert (out["result"]["inserted"], out["result"]["ro"]) == (False, None)
     assert out["result"]["free_bytes"] == 1234567
-    run("plug")
+    run("start")
+    run("mount", "--ro")
     host.set_udc_state("configured")
     _code, out = run("state")
-    assert out["result"]["state"] == "plugged"
+    assert out["result"]["state"] == "started"
     assert (out["result"]["udc"], out["result"]["udc_state"]) == (UDC, "configured")
+    assert (out["result"]["inserted"], out["result"]["ro"]) == (True, True)
 
 
-def test_img_put_refused_while_plugged_and_cleans_staging(run, host, fake_cmd):
+@pytest.mark.parametrize(
+    "ops, refused",
+    [((), False), (("start",), False), (("mount",), False), (("start", "mount"), True),
+     (("start", "mount", "eject"), False), (("start", "mount", "stop"), False)],
+)  # fmt: skip
+def test_img_put_refused_only_while_target_sees_media(run, host, fake_cmd, ops, refused):
     host.initialise()
-    run("plug")
+    for op in ops:
+        run(op)
     staged = host.path / "staging/abc"
     staged.write_bytes(b"data")
-    _code, out = run("img-put", "abc", "/x.txt")
-    assert out["error"]["code"] == "wrong_state"
+    code, out = run("img-put", "abc", "/x.txt")
+    assert (code == 1 and out["error"]["code"] == "wrong_state") is refused
     assert not staged.exists()
 
 
@@ -158,9 +259,10 @@ def test_staging_names_validated(helper, host, bad):
         helper.staging_file(helper.Ctx(str(host.path)), bad)
 
 
-def test_img_get_warns_when_plugged_rw(run, host, fake_cmd):
+def test_img_get_warns_when_inserted_rw(run, host, fake_cmd):
     host.initialise()
-    run("plug")
+    run("start")
+    run("mount")
 
     def reply(cmd):
         (host.path / "staging/out1").write_bytes(b"abc")
@@ -179,14 +281,14 @@ def _type(run, host, monkeypatch, text, *extra):
 
 def test_type_requires_configured_target(run, host, fake_cmd, monkeypatch):
     host.initialise()
-    run("plug")
+    run("start")
     _code, out = _type(run, host, monkeypatch, "hi")
     assert out["error"]["code"] == "not_configured"
 
 
 def test_type_sends_text(run, host, fake_cmd, monkeypatch):
     host.initialise()
-    run("plug")
+    run("start")  # the keyboard works with the media ejected
     host.set_udc_state("configured")
     reader = FifoReader(host.make_hid())
     code, out = _type(run, host, monkeypatch, "Hi\n")
@@ -196,7 +298,7 @@ def test_type_sends_text(run, host, fake_cmd, monkeypatch):
 
 def test_type_timeout_reports_unsent(run, host, fake_cmd, monkeypatch):
     host.initialise()
-    run("plug")
+    run("start")
     host.set_udc_state("configured")
     reader = FifoReader(host.make_hid(), read=False)
     try:
@@ -256,11 +358,12 @@ def test_img_rm_errors(run, host, fake_cmd, target, code):
     assert out["error"]["code"] == code
 
 
-def test_img_rm_refused_while_plugged_or_root(run, host, fake_cmd):
+def test_img_rm_refused_while_target_sees_media_or_root(run, host, fake_cmd):
     host.initialise()
     _, out = run("img-rm", "/")
     assert out["error"]["code"] == "bad_path"
-    run("plug")
+    run("start")
+    run("mount")
     fake_cmd.clear()
     _, out = run("img-rm", "/f.txt")
     assert out["error"]["code"] == "wrong_state"
@@ -280,7 +383,7 @@ CTRL_ALT = 0x01 | 0x04
 )
 def test_reset_sends_keys(run, host, fake_cmd, helper, monkeypatch, extra, usages, pauses):
     host.initialise()
-    run("plug")
+    run("start")
     host.set_udc_state("configured")
     reader = FifoReader(host.make_hid())
     slept = []

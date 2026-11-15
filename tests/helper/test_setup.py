@@ -122,11 +122,11 @@ def test_doctor_accepts_no_udc_while_dwc2_unloaded(run, pi, fake_cmd, helper, mo
     (pi.root / "boot/firmware/config.txt").write_text(STOCK_CONFIG + helper.OVERLAY_LINE + "\n")
     _code, out = run("doctor")
     udc = next(c for c in out["result"]["checks"] if c["name"] == "udc")
-    assert udc["status"] == "ok" and "plug" in udc["message"]
+    assert udc["status"] == "ok" and "start" in udc["message"]
     assert out["result"]["reboot_required"] is False
 
 
-def test_plug_loads_dwc2_before_binding(run, pi, fake_cmd):
+def test_start_loads_dwc2_before_binding(run, pi, fake_cmd):
     pi.initialise()
     shutil.rmtree(pi.udc_dir)
 
@@ -137,16 +137,16 @@ def test_plug_loads_dwc2_before_binding(run, pi, fake_cmd):
         return completed()
 
     fake_cmd.reply = reply
-    code, out = run("plug")
+    code, out = run("start")
     assert code == 0, out
     assert ["modprobe", "dwc2"] in fake_cmd
     assert pi.attr("UDC") == pi.udc_dir.name
 
 
-def test_plug_reports_dwc2_load_failure(run, pi, fake_cmd):
+def test_start_reports_dwc2_load_failure(run, pi, fake_cmd):
     pi.initialise()
     shutil.rmtree(pi.udc_dir)
     fake_cmd.reply = lambda cmd: completed(returncode=1, stderr="not found")
-    code, out = run("plug")
+    code, out = run("start")
     assert code == 1
     assert out["error"]["code"] == "modprobe"

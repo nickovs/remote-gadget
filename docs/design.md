@@ -29,8 +29,9 @@ BIOS/UEFI setup screens, installers or login prompts.
 | target | The computer the gadget is plugged into, which acts as the USB host. |
 | UDC | USB Device Controller on the gadget host (`/sys/class/udc/*`). |
 | image | The FAT filesystem image file that backs the mass-storage function. |
-| started | The configfs gadget exists on the gadget host but is not bound to the UDC. |
-| plugged | The gadget is bound to the UDC, so the target can see it. |
+| started | The gadget is bound to the UDC, so the target can see the keyboard and the drive. |
+| stopped | The gadget is not bound (it may not exist in configfs at all), so the target sees no device. |
+| inserted / ejected | Whether the drive has media in it. Independent of started/stopped, like a card reader with or without a card. |
 
 ### Out of scope
 
@@ -45,21 +46,22 @@ BIOS/UEFI setup screens, installers or login prompts.
 
 | # | Requirement |
 |---|-------------|
-| R1 | Subcommands: `init`, `state`, `doctor`, `write`, `read`, `plug`, `unplug`, `type`, `reset`. |
+| R1 | Subcommands: `init`, `state`, `doctor`, `write`, `read`, `start`, `stop`, `mount` (alias `insert`), `eject`, `type`, `reset`. |
 | R2 | Config is INI-style profiles in `./.rgadget`, `~/.rgadget` and `/etc/rgadget`; each profile is taken whole from the nearest file that defines it. |
 | R3 | Every config value can be overridden on the command line. |
 | R4 | Short commands with sensible defaults; terse output; `--quiet` prints only warnings and errors. |
 | R5 | Exit status is 0 on success and non-zero on failure; colour is used only on a colour-capable TTY. |
 | R6 | `init` sets up the machine. It is idempotent and normally needed only once per gadget host. |
-| R7 | `plug`/`unplug` start the gadget if needed on an initialised host. |
-| R8 | `write` is refused while plugged; `read` while plugged warns that the data may be inconsistent. |
+| R7 | `start`/`stop` connect and disconnect the whole gadget; `mount`/`eject` change only the media, so the keyboard stays usable while the drive is empty. |
+| R8 | `write` is refused while the target can see the media (started and inserted); `read` then warns that the data may be inconsistent if the media is read-write. |
 | R9 | `type` is synchronous with a timeout and reports any text that was not delivered. |
 | R10 | Keymaps: US by default. Any layout installed on the gadget host can be used. |
 | R11 | Supports Pi Zero/Zero W/Zero 2 W, Pi 4 (USB-C), Pi 5 and any Linux with configfs and a UDC. |
 | R12 | `doctor` diagnoses problems, optionally fixes them, and says when its answers are unreliable (for example on a non-Debian or non-Pi host). |
 | R13 | The client is a normal Python package (src-layout, `pyproject.toml`, `uv`). Python ≥ 3.10 on the client. The remote helper targets 3.11, and is 3.9-compatible where that costs little. |
-| R14 | When unplugged, the gadget's data-line pull-up is off, so the target sees no device. When plugged again, the target enumerates it as new and rereads the storage. |
-| R15 | `plug` can show the storage to the target as read-only. |
+| R14 | When stopped, the gadget's data-line pull-up is off, so the target sees no device. When started again, the target enumerates it as new. |
+| R15 | `mount` can show the storage to the target as read-only. |
+| R17 | The media state (inserted read-only, inserted read-write, ejected) is remembered across `stop`/`start` and gadget-host reboots. A fresh install starts ejected. |
 | R16 | The USB vendor and product IDs can optionally be configured. |
 
 ---
@@ -118,7 +120,7 @@ src/remote_gadget/
     config.py           # profile loading, saving, validation, CLI overrides
     inifile.py          # comment-preserving INI section editor (used by `config`)
     transport.py        # Transport protocol + SshTransport (ssh/scp via subprocess)
-    api.py              # Gadget class: init/state/doctor/write/read/plug/unplug/type/reset
+    api.py              # Gadget class: init/state/doctor/write/read/start/stop/mount/eject/type/reset
     output.py           # Reporter: levels, colour detection, --quiet
     errors.py           # exception hierarchy
     remote/
@@ -191,7 +193,7 @@ keymap = gb
 | `path` | abs path | `/var/lib/remote-gadget` | Absolute; no `..` components; no whitespace or shell metacharacters. |
 | `size` | int (MiB) | `64` | 8 ≤ size ≤ 32768 (the FAT32 range that mkfs.vfat and the targets handle comfortably). |
 | `keymap` | str | `us` | `layout` or `layout:variant`, `[A-Za-z0-9_-]+`. |
-| `readonly` | bool | `false` | Default for `plug`: show the storage to the target as write-protected (§6.2). |
+| `readonly` | bool | `false` | Default for `mount`: show the storage to the target as write-protected (§6.2). |
 | `vendor_id` | hex u16 | `0x1d6b` | `0x0001`–`0xffff`. Optional: targets find keyboards and drives by interface class, so most users never set this. |
 | `product_id` | hex u16 | `0x0104` | `0x0001`–`0xffff`. As for `vendor_id`. |
 
@@ -209,7 +211,7 @@ keymap = gb
 
 These global options override the profile: `--host`, `--username/-u`, `--key/-i`,
 `--sudo/--nosudo`, `--path`, `--size`, `--keymap`, `--vendor-id`, `--product-id`
-(`readonly` is overridden by `plug --ro/--rw`). They are validated with the same rules
+(`readonly` is overridden by `mount --ro/--rw`). They are validated with the same rules
 as the config file. The result is an immutable `Config` dataclass.
 
 ### 5.4 Writing profiles: `config`
@@ -250,7 +252,8 @@ creates or changes a profile. The settings are the global options from §5.3, pl
     staging/              # scp landing area for read/write; emptied after each operation
     keymaps/              # cached parsed keymaps (§9.3)
     state.json            # {"initialised": true, "size": 64, "udc": "...",
-                          #  "unplugged_at": <UTC timestamp or null>}
+                          #  "stopped_at": <UTC timestamp or null>,
+                          #  "media": {"inserted": false, "ro": false}}
 ```
 
 The default `path` is `/var/lib/remote-gadget`. The FHS reserves `/var/lib` for
@@ -274,96 +277,102 @@ cannot be reconfigured at runtime.
     functions/mass_storage.usb0/ stall 1, lun.0/{file=<path>/image.img, removable 1, ro 0|1}
     configs/c.1/hid.usb0 -> functions/hid.usb0
     configs/c.1/mass_storage.usb0 -> functions/mass_storage.usb0
-    UDC                          ("" = unplugged, "<udc name>" = plugged)
+    UDC                          ("" = stopped, "<udc name>" = started)
 ```
 
-**Lifecycle states** (as reported by `state`):
+The gadget has two independent parts of state, like a USB card reader that can be
+plugged in or not, with or without a card in it:
 
-| State | Condition |
-|-------|-----------|
-| `uninitialised` | `<path>/state.json` is missing or invalid. |
-| `stopped` | Initialised, but the gadget directory does not exist in configfs (for example after a reboot). |
-| `unplugged` | The gadget exists and `UDC` is empty. |
-| `plugged` | `UDC` is set. `state` also shows `ro` or `rw`. |
+| Part | Values | Stored in |
+|------|--------|-----------|
+| Connection | `stopped`, `started` | `UDC` (empty or the UDC name) |
+| Media | `ejected`, `inserted` (read-only or read-write) | `lun.0/file` (empty or the image path) and `lun.0/ro` |
 
-**Start** (an internal step, not a subcommand) brings a host from `stopped` to `unplugged`.
-It runs `modprobe libcomposite` and then builds the configfs tree. Start needs root and is
-idempotent: an existing directory is checked and left alone if its contents match.
-`plug` and `unplug` both start the gadget first when it is `stopped`.
+`state` reports `uninitialised` if `<path>/state.json` is missing or invalid. Otherwise
+it reports the connection and the media, and, when started, the target status.
 
-#### What "unplugged" must mean electrically
+**Building the gadget** is an internal step. `start` runs `modprobe libcomposite` and then
+builds the configfs tree if it does not exist (for example after a reboot). It is
+idempotent: existing functions are left alone, because their attributes are locked once
+linked. A newly built LUN is given the media state saved in `state.json` (§6.1).
 
-The main requirement is that **while unplugged, the target sees no device at all**: the
-gadget's D+ (or D−) pull-up is off, exactly as if the cable had been pulled out. Then,
-when the gadget is plugged in again, the target treats it as a new device. It enumerates
-it again and rereads the storage from scratch, so it never serves stale cached sectors
-from before a `write`.
+#### Connection: `start` and `stop`
 
-This design gets that behaviour by binding and unbinding the configfs gadget:
+The main requirement is that **while stopped, the target sees no device at all**: the
+gadget's D+ (or D−) pull-up is off, exactly as if the cable had been pulled out. When
+started again, the target treats it as a new device and enumerates it from scratch.
 
-* `unplug` writes `""` to `UDC`. The kernel UDC core calls `usb_gadget_disconnect()` and
+* `stop` writes `""` to `UDC`. The kernel UDC core calls `usb_gadget_disconnect()` and
   then unbinds the function drivers. On dwc2 (all Pi models) `usb_gadget_disconnect()`
   sets `DCTL.SftDiscon`, which removes the pull-up. The target sees an ordinary
   disconnect.
-* `plug` writes the UDC name to `UDC`. The UDC core binds the gadget and calls
-  `usb_gadget_connect()`, which turns the pull-up back on. The target sees a new attach
-  and enumerates the device from the start.
+* `start` writes the UDC name to `UDC`. The UDC core binds the gadget and calls
+  `usb_gadget_connect()`, which turns the pull-up back on. The target sees a new attach.
 
-Alternatives that were rejected:
+**Checking it worked:** after unbinding, `stop` checks that `UDC` reads back as empty.
+If not, it is an error. It also reads `/sys/class/udc/<udc>/state`; if that does not say
+`not attached`, it gives a **warning**, because some UDC drivers do not update this file
+on unbind (dwc2 does, §13). `start` and `stop` read `UDC` first, so they are idempotent.
 
-| Mechanism | Why not |
-|-----------|---------|
-| `lun.0/forced_eject` (media change only) | The device stays on the bus. Many hosts, and most firmware/UEFI, keep cached state or ignore media-change events, and the keyboard is not affected at all. It does not satisfy the requirement. |
-| `/sys/class/udc/<udc>/soft_connect` on its own | It controls the same pull-up, but it only works while the gadget is bound, and it leaves the functions active. Unbinding gives the same electrical result and also leaves the gadget in a known state. |
-| Unloading the kernel modules | Slow, needs the configfs tree rebuilt, and gives no extra benefit. |
+**Minimum time stopped:** `stop` saves `stopped_at` in `state.json`. If `start` runs
+within **1 s** of that time, it sleeps for the rest of the second first, so the target's
+hub has always polled and seen the disconnect.
 
-**Checking it worked:** after unbinding, `unplug` checks that `UDC` reads back as empty.
-If not, it is an error, so a failed unplug is never reported as success. It also reads
-`/sys/class/udc/<udc>/state`. If that does not say `not attached`, it gives a
-**warning**, not an error, because some UDC drivers do not update this file on unbind.
-Whether dwc2 does is something to check on real hardware (§13). If it does, the warning
-can become an error for dwc2. Before writing to `UDC`, the helper reads it, so that it
-knows the starting state and `plug`/`unplug` are idempotent.
+#### Media: `mount`/`insert` and `eject`
 
-**Minimum time unplugged:** `unplug` saves `unplugged_at` in `state.json`. If `plug` runs
-within **1 s** of that time, it sleeps for the rest of the second first. This means the
-target's hub has always polled and seen the disconnect, even after a very quick
-`unplug; plug`. The 1 s value is a constant in the helper, chosen so that a host
-polling its hub port every few hundred milliseconds cannot miss the disconnect.
+The drive is a removable-media LUN (`removable 1`), so the media can change while the
+gadget stays on the bus and the keyboard keeps working.
 
-**Pi-side caching:** while unplugged, the LUN keeps `image.img` open, but no I/O goes
-through the gadget. `mtools`, run by the helper, works on the same file through the same
-page cache, so the gadget sees every `write` as soon as it is plugged again. No extra
-flush is needed on the Pi.
+* `eject` writes `""` to `lun.0/file`. The target sees "medium not present" on its next
+  command; a Linux target notices within its media-change poll interval (2 s by default).
+  While the target holds the medium locked (a Linux target does this while the drive is
+  mounted, using PREVENT ALLOW MEDIUM REMOVAL), the kernel refuses with `EBUSY`. `eject`
+  then fails with a hint to unmount or eject the drive on the target first.
+  `eject --force` writes `1` to `lun.0/forced_eject` instead, which ejects regardless and
+  can lose the target's unwritten data.
+* `mount` (alias `insert`) writes `ro`, then the image path to `lun.0/file`. The target
+  sees a "not ready to ready" unit attention, rereads the capacity and the filesystem.
+  The kernel refuses to change `ro` while a file is open, so `ro` is only written while
+  ejected. If the media is already inserted in the other mode, `mount` fails with a hint
+  to `eject` first; it never swaps the media behind the target's back.
+* The target can eject the media itself (START STOP UNIT with LoEj, for example `eject`
+  on Linux or "Eject" in a file manager). The kernel then clears `lun.0/file`, so the
+  helper always reads the media state from the LUN when the gadget exists, and saves it
+  to `state.json` so that it survives a reboot. When the gadget does not exist, `mount`
+  and `eject` only change `state.json`; `start` applies it.
 
-#### Read-only plug
+**Media change versus re-enumeration.** The original design rejected media change
+because firmware may cache state or ignore media-change events. That risk remains for
+some targets, so `stop`/`start` stays available as the heavier option: it makes the
+target enumerate the whole device again. Media change is checked on Linux and EDK II
+targets (§13).
 
-`plug --ro` (or `readonly = true` in the profile, with `plug --rw` to override it) shows
-the storage to the target as write-protected. The kernel refuses to change `lun.0/ro`
-while the LUN has a file open (`EBUSY`). So while unbound, `plug` does this:
-1. if the current `ro` value differs from the one wanted: write `""` to `lun.0/file`,
-   write `ro`, then write the image path back to `lun.0/file`;
-2. bind the UDC.
+**Pi-side caching:** `mtools`, run by the helper, works on `image.img` through the same
+page cache as the LUN, so the target sees every `write` when the media is next inserted.
+No extra flush is needed on the Pi.
 
-What changes when the gadget is plugged read-only:
-* `read` does not warn, because the target cannot change the image.
-* `write` is still refused, because the target may have cached the old contents, so the
-  user must still `unplug` first.
-* The keyboard is not affected.
+**What the target can see** decides which file operations are allowed:
+* `write` and `rm` are refused while started and inserted, because the target may have
+  cached the FAT, and changing it underneath would corrupt the drive. Ejecting (by
+  `eject`, or by the target) or stopping makes them safe.
+* `read` warns while started and inserted read-write, because the target may have
+  unflushed writes. Read-only media cannot change, so it does not warn.
+* `init --reformat` is refused while started and inserted, and re-points the LUN at the
+  new image only if the media is inserted.
 
 **UDC selection:** use the single entry in `/sys/class/udc`. If there are several, use the
 `udc` value saved in `state.json` by `init`. If there are none, report "no USB device
 controller; dwc2 overlay not active?" and suggest `doctor`.
 
 **Host detection:** `/sys/class/udc/<udc>/state` is meaningful only while the gadget is
-bound. When plugged, `state` shows it: `configured` means the target has enumerated the
-gadget, while `not attached`, `default` and `suspended` mean it has not. When unplugged,
-the target's presence is reported as *unknown*. On a bus-powered Pi Zero, VBUS sensing is
-not reliable, so the tool does not try it.
+started: `configured` means the target has enumerated the gadget, while `not attached`,
+`default` and `suspended` mean it has not. When stopped, the target's presence is
+*unknown*. On a Pi Zero, VBUS sensing is not reliable, so the tool does not try it; the
+state can stay `configured` after the cable is pulled while the Pi is externally powered.
 
 ### 6.3 Machine setup done by `init`
 
-`init` sets up the machine; it does not start the gadget. It is idempotent, and each step
+`init` sets up the machine; it does not start the gadget, and it leaves the media ejected. It is idempotent, and each step
 first checks whether it is already done.
 
 1. Check ssh login and sudo (`sudo -n true`), unless `nosudo` is set.
@@ -374,19 +383,19 @@ first checks whether it is already done.
    `/boot/config.txt` on older releases. The edit appends a fresh `[all]` section, so earlier
    board-specific sections (the stock file has `dtoverlay=dwc2,dr_mode=host` under `[cm5]`)
    cannot override it, and a timestamped backup is made first. No `modules-load.d` entry is
-   needed: `plug` loads `dwc2` and `libcomposite` itself. If the overlay was added, `init` reports **reboot required** and exits with status 4.
+   needed: `start` loads `dwc2` and `libcomposite` itself. If the overlay was added, `init` reports **reboot required** and exits with status 4.
    `--reboot` reboots the Pi straight away.
    **Pi only:** also write `/etc/modprobe.d/remote-gadget.conf` containing `blacklist dwc2`.
    As soon as `dwc2` probes in peripheral mode it turns on the D+ pull-up, before any gadget
    is bound. The target then sees a full-speed device that never answers its descriptor
    requests, and retries for about 90 s (timeouts, a port power cycle, then "unable to
    enumerate"). Firmware booting at that moment may stall. A blacklist only stops loading
-   by alias at boot; `plug` runs `modprobe dwc2` by name just before binding the UDC, so the
-   target sees at most a brief attempt that the bind replaces. `unplug` leaves `dwc2`
+   by alias at boot; `start` runs `modprobe dwc2` by name just before binding the UDC, so the
+   target sees at most a brief attempt that the bind replaces. `stop` leaves `dwc2`
    loaded: unbinding disconnects cleanly, and unloading it may leave the pull-up on (§13).
    `dwc2` is not in the Pi OS initramfs, so the modprobe.d file is enough. With `dwc2`
    blacklisted and not loaded, "no UDC" is normal, so it is not taken to mean a reboot is
-   needed. If the overlay was never activated, `plug` reports it after loading `dwc2`.
+   needed. If the overlay was never activated, `start` reports it after loading `dwc2`.
    On non-Pi hosts, `init` changes no boot configuration and just checks that a UDC exists.
 4. Check that the required packages are installed (`mtools`, `dosfstools`, `python3`).
    On Debian, `apt-get install -y` is offered when `--install-packages` is given. It
@@ -427,7 +436,7 @@ ssh [opts] <user@host> [sudo -n] python3 <path>/bin/rgadget-helper --expect-vers
 ssh [opts] <user@host> [sudo -n] python3 - --path <path> {setup|doctor} [args]   # helper source on stdin
 ```
 
-* `op` is one of: `ping`, `setup`, `doctor`, `plug`, `unplug`, `state`, `img-put`,
+* `op` is one of: `ping`, `setup`, `doctor`, `start`, `stop`, `mount`, `eject`, `state`, `img-put`,
   `img-get`, `img-ls`, `img-rm`, `staging-clean`, `type`, `reset`.
 * `setup` and `doctor` are run in **bootstrap** mode: the helper's source is piped to
   `python3 -`, so they work before the helper is installed (or when `path` is broken).
@@ -475,15 +484,17 @@ Global options: `-p/--profile`, `--config`, the config overrides (§5.3), `-q/--
 | Command | Behaviour |
 |---------|-----------|
 | `init [--reboot] [--install-packages] [--reformat] [--yes]` | §6.3. Prints one line per step: done, already OK, or changed. |
-| `state` | Prints the lifecycle state (§6.2), the UDC name, the target status (when plugged), the image size and free space (via `minfo`/`mdir`), and the keymap. Exit 0 if `state` worked, whatever the gadget's state is. |
+| `state` | Prints the connection and media state (§6.2), the UDC name, the target status (when started), the image size and free space (via `minfo`/`mdir`), and the keymap. Exit 0 if `state` worked, whatever the gadget's state is. |
 | `doctor [--fix]` | §8.1. |
-| `write LOCAL [REMOTE]` | Refused if plugged (exit 1, suggests `unplug`). REMOTE defaults to `/<basename LOCAL>`; a REMOTE ending in `/` means a directory. Copies by `scp` to `staging/`, then `mcopy -o` into the image (`mmd` creates missing parent directories). LOCAL must be a regular readable file; directories are not supported in v1. Staging is cleaned up on success and on failure. |
-| `read REMOTE [LOCAL]` | When plugged read-write, warns that the target may have unflushed writes and the copy may be inconsistent, then continues. `mcopy` to `staging/`, then `scp` back. LOCAL defaults to `./<basename REMOTE>`. An existing local file is not overwritten without `-f`. |
+| `write LOCAL [REMOTE]` | Refused while started with the media inserted (exit 1, suggests `eject`). REMOTE defaults to `/<basename LOCAL>`; a REMOTE ending in `/` means a directory. Copies by `scp` to `staging/`, then `mcopy -o` into the image (`mmd` creates missing parent directories). LOCAL must be a regular readable file; directories are not supported in v1. Staging is cleaned up on success and on failure. |
+| `read REMOTE [LOCAL]` | When started with the media inserted read-write, warns that the target may have unflushed writes and the copy may be inconsistent, then continues. `mcopy` to `staging/`, then `scp` back. LOCAL defaults to `./<basename REMOTE>`. An existing local file is not overwritten without `-f`. |
 | `ls [REMOTE_DIR]` | (Added.) Lists the image contents with `mdir`, because `read` is hard to use without it. |
-| `rm [-r] REMOTE` | (Added.) Deletes from the image. Refused while plugged, because the target caches the FAT and changing it underneath would corrupt the drive. Tries `mdel` (files only), then `mrd` (empty directories; a non-empty one fails with a hint to use `-r`), or `mdeltree` with `-r`. Refuses `/`. |
-| `plug [--ro \| --rw]` | Starts the gadget if `stopped`, sets the LUN read-only or read-write (§6.2), waits out the minimum time unplugged, then binds the UDC, which turns the pull-up on. Fails with a hint if the host is `uninitialised`. If already plugged with a different `ro` setting, it fails with a hint to `unplug` first (it never re-plugs on its own). |
-| `unplug` | Starts the gadget if `stopped`, so that the end state is a well-defined `unplugged`, then unbinds the UDC, which turns the pull-up off so the target sees the device removed (§6.2). Saves `unplugged_at`. |
-| `type [TEXT \| -] [--enter] [--timeout S] [--delay MS]` | §9. With no TEXT, or with `-`, reads stdin. Nothing is added to the text unless `--enter` is given, because a stray Enter at a BIOS menu selects something. Needs `plugged` and target state `configured`. |
+| `rm [-r] REMOTE` | (Added.) Deletes from the image. Refused while started with the media inserted, because the target caches the FAT and changing it underneath would corrupt the drive. Tries `mdel` (files only), then `mrd` (empty directories; a non-empty one fails with a hint to use `-r`), or `mdeltree` with `-r`. Refuses `/`. |
+| `start` | Builds the gadget if needed (with the saved media state), loads `dwc2` if it is not loaded, waits out the minimum time stopped, then binds the UDC, which turns the pull-up on (§6.2). Fails with a hint if the host is `uninitialised`. |
+| `stop` | Unbinds the UDC, which turns the pull-up off so the target sees the device removed (§6.2). Saves `stopped_at` and the media state. |
+| `mount [--ro \| --rw]`, alias `insert` | Inserts the media, read-only or read-write (default from `readonly`). If already inserted in the other mode, fails with a hint to `eject` first. Works whether started or stopped. |
+| `eject [--force]` | Ejects the media. Fails with a hint if the target has it locked (mounted); `--force` uses `forced_eject`. Works whether started or stopped. |
+| `type [TEXT \| -] [--enter] [--timeout S] [--delay MS]` | §9. With no TEXT, or with `-`, reads stdin. Nothing is added to the text unless `--enter` is given, because a stray Enter at a BIOS menu selects something. Needs `started` and target state `configured`. |
 | `reset [--fswitch N]` | Sends Ctrl-Alt-Del: report `05 00 4C 00 00 00 00 00` followed by the all-zero release report. Same preconditions as `type`. With `--fswitch N` (1–12) it first sends Ctrl-Alt-F`N` (usage `0x3A + N - 1`), then waits 1 s before Ctrl-Alt-Del. A Linux kernel acts on Ctrl-Alt-Del only on a text console (§13), so this switches a graphical target to one first. |
 
 ### 8.1 `doctor`
@@ -506,7 +517,7 @@ the tool can fix the problem, and if not, gives a one-line suggestion for the us
 | `path` exists and is writable by the user | yes |
 | Helper version matches | yes (re-upload) |
 | The image exists and is a valid FAT (`minfo`) | no (suggests `init --reformat`) |
-| The gadget's configfs tree matches the expected one | yes (rebuild while unplugged) |
+| The gadget's configfs tree matches the expected one | yes (rebuild while stopped) |
 
 **Reliability:** if `/etc/os-release` does not show a Debian-family system, then every
 check that depends on the distribution (packages, boot config, module config) reports
@@ -581,7 +592,7 @@ RemoteGadgetError
 ├── SshConnectionError   (exit 3)   ssh exit 255, timeouts (not the builtin ConnectionError)
 ├── RemoteError          (exit 1)   helper ok=false; carries code/message/hint
 │   ├── NotInitialisedError
-│   ├── WrongStateError         e.g. write while plugged
+│   ├── WrongStateError         e.g. write while the target can see the media
 │   └── TypingTimeoutError      carries the text that was not sent
 └── LocalFileError       (exit 1)   missing or unreadable local file, would overwrite
 ```
@@ -600,7 +611,7 @@ Exit 4 is reserved for "done, but a reboot is required" (`init`, `doctor --fix`)
 error. Output is one line per fact. For example, `state` prints:
 
 ```
-lab-pi: plugged (udc 20980000.usb, target: configured)
+lab-pi: started (udc 20980000.usb, target: configured) · media: inserted read-only
 storage: 64 MiB, 12.3 MiB free · keymap: us
 ```
 
@@ -611,7 +622,7 @@ from remote_gadget import Config, Gadget
 
 cfg = Config.load(profile="lab-pi", overrides={"keymap": "gb"})
 g = Gadget(cfg)                     # Gadget(cfg, transport=FakeTransport()) in tests
-g.unplug(); g.write("fw.bin", "/fw.bin"); g.plug()
+g.eject(); g.write("fw.bin", "/fw.bin"); g.mount(ro=True)
 g.type("hello\n", timeout=5)
 print(g.state())                    # returns a GadgetState dataclass, not text
 ```
@@ -628,7 +639,7 @@ The API returns data and raises exceptions. All printing lives in `cli.py` and `
   detection.
 * **Helper:** `helper.py` takes `--sysroot` (hidden, for tests only) so that configfs,
   `/sys/class/udc` and `/dev/hidg0` can be fake directories or FIFOs under `tmp_path`.
-  Tests cover: building and starting configfs idempotently, plug/unplug, the state
+  Tests cover: building and starting configfs idempotently, start/stop, mount/eject, the state
   machine, HID report generation, the timeout and partial-delivery path (a FIFO that is
   never read), the US keymap, and parsing recorded `ckbcomp` output for `gb`, `de` and `fr`.
   The mtools calls are tested through a fake `PATH` with stub scripts. Real `mtools`
@@ -648,7 +659,7 @@ The API returns data and raises exceptions. All printing lives in `cli.py` and `
 | A single monolithic `#!/usr/bin/env python` file with no packages | A normal src-layout package; the only single file is the uploaded remote helper | Decision by the author: testability and conventions matter more than single-file install. |
 | `state` reports "pending keyboard scan codes" | No queue. `type` is synchronous; `state` reports whether the target has the gadget `configured`, which is what "the keyboard is being read" means in practice | Decision by the author: synchronous typing with a timeout. Text that is not delivered is reported by `type` itself. |
 | `state` reports whether a USB host is attached | Reported only while plugged; *unknown* while unplugged | The UDC state is meaningful only while bound, and VBUS sensing is not reliable on bus-powered boards. |
-| `init` sets up the gadget and starts it | `init` sets up the machine only; `plug`/`unplug` start the gadget when needed; there is no boot-time persistence | Decision by the author. |
+| `init` sets up the gadget and starts it | `init` sets up the machine only; `start` builds and connects the gadget; there is no boot-time persistence | Decision by the author. |
 | Keymap = "scan map name" | XKB layout names (`gb`, `de:nodeadkeys`) resolved on the gadget host through `ckbcomp`, with US built in | Uses the layouts Linux already ships, as requested. |
 | Default `path` `/opt/run/remote-gadget` | `/var/lib/remote-gadget` | `/var/lib` is the FHS location for persistent state. |
 | Plug/unplug semantics not specified | Unplug turns the D+ pull-up off (UDC unbind), so the target sees a real disconnect and enumerates again on plug | The target must reread the storage after a `write`. |
@@ -656,11 +667,15 @@ The API returns data and raises exceptions. All printing lives in `cli.py` and `
 | — | Added `ls`, `rm` and the `-f`, `--fix`, `--reformat`, `--timeout`, `--delay`, `--enter` options | Needed for the listed commands to be usable and safe. |
 | Config "precedence" | Each profile is taken whole from the nearest file that defines it | Decision by the author. (An earlier draft merged key by key.) |
 | — | Added `config` to create and edit profiles (§5.4) | Requested. |
-| — | `dwc2` is blacklisted at boot and loaded by `plug` (§6.3) | Found on hardware: with `dwc2` loaded but no gadget bound, the target retries enumeration for about 90 s and its boot can stall. |
+| `plug`/`unplug` connect and disconnect the whole gadget | `start`/`stop` for the connection and `mount`/`insert`/`eject` for removable media; `plug`/`unplug` removed | Decision by the author: with the drive tied to the connection, there was no keyboard while the drive was being changed. A fresh install starts ejected, since staging files is usually the first job. |
+| — | `dwc2` is blacklisted at boot and loaded by `start` (§6.3) | Found on hardware: with `dwc2` loaded but no gadget bound, the target retries enumeration for about 90 s and its boot can stall. |
 
 ---
 
 ## 13. Open questions and things to check on hardware
+
+Results recorded before the start/stop and mount/eject split use the old command names:
+`plug` is now `start` plus `mount`, and `unplug` is `stop`.
 
 1. **dwc2 unbind behaviour.** *Partly checked* on a Pi Zero 2 W (Raspbian 13, kernel 6.18).
    After `plug`, `/sys/class/udc/3f980000.usb/state` goes to `configured` within about
@@ -710,7 +725,18 @@ The API returns data and raises exceptions. All printing lives in `cli.py` and `
    running.
    Not yet tried: other layouts on a real target, and the timeout path against a real
    host.
-6. **Storage in both directions:** *checked* with a macOS target. A file written by `write`
+6. **Media change (`mount`/`eject`).** *Checked* on a Pi Zero 2 W into Ubuntu 26.04
+   (EDK II firmware). Linux: `eject` shows the drive as 0 bytes within the 2 s poll, the
+   keyboard stays connected, and after `write` and `insert` the target reads the new
+   contents, even when the whole swap happens faster than the poll (the unit attention
+   on insert makes it drop its cache). `eject` is refused with `EBUSY` while the target
+   has the drive mounted; `eject --force` works and the target's mount then gets I/O
+   errors. The target's own `eject` clears the LUN and `state` shows it. The media state
+   survives `stop`/`start` and a Pi reboot. EFI shell: typing works with the media ejected;
+   after `insert`, `map -r` is needed, and without it the shell silently serves the old
+   contents. A `map -r` while ejected renumbers the other drives, so `fs0:` can become the
+   internal disk.
+7. **Storage in both directions:** *checked* with a macOS target. A file written by `write`
    while unplugged read back identically on the Mac after `plug --rw`. A file the Mac wrote
    (then ejected) read back identically with `read` after `unplug`. `fsck.vfat -n` found the
    image clean afterwards. The target must eject before `unplug`; this is documented in the
@@ -727,5 +753,5 @@ The API returns data and raises exceptions. All printing lives in `cli.py` and `
 |----------|----------|
 | Helper Python version | Target 3.11; keep to 3.9-compatible syntax where it costs little (§4). |
 | Default `path` | `/var/lib/remote-gadget` (§6.1). |
-| Read-only LUN | `plug --ro` / `readonly` profile key (§6.2). |
+| Read-only LUN | `mount --ro` / `readonly` profile key (§6.2). |
 | USB IDs | Optional `vendor_id`/`product_id`; default Linux Foundation IDs (§5.2). |

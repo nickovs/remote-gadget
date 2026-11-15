@@ -59,26 +59,37 @@ def gadget(*replies, **cfg):
 
 
 def test_root_ops_use_sudo_and_expect_version():
-    g, t, _ = gadget(ok({"state": "plugged", "ro": False, "changed": True}))
-    g.plug()
+    g, t, _ = gadget(ok({"state": "started", "changed": True}))
+    g.start()
     argv = t.runs[0][0]
     assert argv[:4] == ["sudo", "-n", "python3", "/var/lib/remote-gadget/bin/rgadget-helper"]
     assert argv[argv.index("--expect-version") + 1] == helper_version()
-    assert argv[-5:] == ["plug", "--vendor-id", "0x1d6b", "--product-id", "0x104"]
+    assert argv[-5:] == ["start", "--vendor-id", "0x1d6b", "--product-id", "0x104"]
 
 
 def test_nosudo_and_readonly_default():
-    g, t, _ = gadget(ok({"ro": True}), nosudo=True, readonly=True)
-    g.plug()
+    g, t, _ = gadget(ok(), ok(), ok(), nosudo=True, readonly=True)
+    g.mount()
+    g.insert(ro=False)
     assert t.runs[0][0][0] == "python3"
-    assert t.runs[0][0][-1] == "--ro"
+    assert t.runs[0][0][-2:] == ["mount", "--ro"]
+    assert t.runs[1][0][-1] == "mount"
+
+
+@pytest.mark.parametrize("force, tail", [(False, ["eject"]), (True, ["eject", "--force"])])
+def test_stop_and_eject_args(force, tail):
+    g, t, _ = gadget(ok(), ok())
+    g.stop()
+    g.eject(force=force)
+    assert t.runs[0][0][-1] == "stop"
+    assert t.runs[1][0][-len(tail) :] == tail
 
 
 def test_state_does_not_use_sudo():
-    g, t, _ = gadget(ok({"state": "unplugged", "ro": False, "size_mb": 64, "extra": 1}))
+    g, t, _ = gadget(ok({"state": "stopped", "inserted": True, "ro": False, "size_mb": 64, "x": 1}))
     st = g.state()
     assert t.runs[0][0][0] == "python3"
-    assert (st.state, st.size_mb) == ("unplugged", 64)
+    assert (st.state, st.inserted, st.ro, st.size_mb) == ("stopped", True, False, 64)
 
 
 def test_state_uninitialised():
@@ -88,7 +99,7 @@ def test_state_uninitialised():
 
 def test_version_mismatch_reuploads_and_retries():
     g, t, _ = gadget(fail("version_mismatch", rc=10), ok())
-    g.unplug()
+    g.stop()
     assert len(t.runs) == 2
     assert t.uploads[0][1] == "/var/lib/remote-gadget/bin/rgadget-helper"
 
@@ -96,27 +107,27 @@ def test_version_mismatch_reuploads_and_retries():
 def test_connection_failure():
     g, _, _ = gadget((255, b"ssh: connect to host pi port 22: Connection refused"))
     with pytest.raises(SshConnectionError, match="Connection refused"):
-        g.unplug()
+        g.stop()
 
 
 def test_missing_helper_means_not_initialised():
     g, _, _ = gadget((2, b"python3: can't open file '/x': [Errno 2] No such file or directory"))
     with pytest.raises(NotInitialisedError):
-        g.unplug()
+        g.stop()
 
 
 def test_sudo_password_needed():
     g, _, _ = gadget((1, b"sudo: a password is required"))
     with pytest.raises(RemoteError, match="password"):
-        g.unplug()
+        g.stop()
 
 
 def test_error_mapping_and_warnings():
-    rc, payload = fail("wrong_state", "cannot write while plugged")
+    rc, payload = fail("wrong_state", "cannot write while the target can see the media")
     payload["warnings"] = ["careful"]
     g, _, warnings = gadget((rc, payload))
-    with pytest.raises(WrongStateError, match="while plugged"):
-        g.unplug()
+    with pytest.raises(WrongStateError, match="can see the media"):
+        g.stop()
     assert warnings == ["careful"]
 
 

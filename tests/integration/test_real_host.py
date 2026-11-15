@@ -1,8 +1,10 @@
 """End-to-end tests against a real, initialised gadget host.
 
 Skipped unless RGADGET_TEST_PROFILE (a profile name) or RGADGET_TEST_HOST is set.
-They plug and unplug the gadget and write to its storage, but never type or send
-Ctrl-Alt-Del, since that would act on whatever computer the gadget is plugged into.
+They start and stop the gadget, insert and eject its media and write to its storage, but
+never type or send
+Ctrl-Alt-Del, since that would act on whatever computer the gadget is plugged into. The
+target must not have the drive mounted.
 """
 
 from __future__ import annotations
@@ -25,7 +27,8 @@ def gadget() -> Gadget:
         pytest.skip("set RGADGET_TEST_PROFILE or RGADGET_TEST_HOST")
     g = Gadget(Config.load(profile=PROFILE, overrides={"host": HOST}))
     yield g
-    g.unplug()
+    g.eject()
+    g.stop()
 
 
 def test_doctor_has_no_failures(gadget):
@@ -34,7 +37,7 @@ def test_doctor_has_no_failures(gadget):
 
 
 def test_storage_round_trip(gadget, tmp_path):
-    gadget.unplug()
+    gadget.eject()
     src = tmp_path / "hello.txt"
     src.write_bytes(os.urandom(100_000))
     gadget.write(str(src), "/rgadget-test/hello.txt")
@@ -50,16 +53,22 @@ def test_storage_round_trip(gadget, tmp_path):
         gadget.rm("/rgadget-test")
 
 
-def test_plug_cycle(gadget):
-    gadget.unplug()
-    assert gadget.state().state == "unplugged"
-    assert gadget.plug(ro=True)["ro"] is True
+def test_start_stop_and_media_cycle(gadget):
+    gadget.start()
+    gadget.eject()
     st = gadget.state()
-    assert (st.state, st.ro) == ("plugged", True)
+    assert (st.state, st.inserted) == ("started", False)
+    assert gadget.mount(ro=True)["media"] == {"inserted": True, "ro": True}
+    st = gadget.state()
+    assert (st.inserted, st.ro) == (True, True)
     with pytest.raises(WrongStateError):
-        gadget.plug(ro=False)
+        gadget.mount(ro=False)
     with pytest.raises(WrongStateError):
         gadget.write(__file__)
-    assert gadget.unplug()["changed"] is True
-    assert gadget.plug(ro=False)["ro"] is False
-    assert gadget.unplug()["changed"] is True
+    assert gadget.eject()["changed"] is True
+    assert gadget.mount(ro=False)["media"]["ro"] is False
+    assert gadget.stop()["changed"] is True
+    st = gadget.state()
+    assert (st.state, st.inserted, st.ro) == ("stopped", True, False)  # media is remembered
+    gadget.write(__file__, "/rgadget-test.py")  # fine while stopped
+    assert gadget.rm("/rgadget-test.py")["kind"] == "file"

@@ -46,10 +46,11 @@ def helper_version() -> str:
 class GadgetState:
     """Result of :meth:`Gadget.state`."""
 
-    state: str  # uninitialised | stopped | unplugged | plugged
+    state: str  # uninitialised | stopped | started
     udc: str | None = None
-    udc_state: str | None = None  # e.g. "configured"; only known while plugged
-    ro: bool | None = None
+    udc_state: str | None = None  # e.g. "configured"; only known while started
+    inserted: bool | None = None  # whether the drive has media in it
+    ro: bool | None = None  # only set while inserted
     size_mb: int | None = None
     free_bytes: int | None = None
 
@@ -169,14 +170,24 @@ class Gadget:
         fields = {f.name for f in dataclasses.fields(GadgetState)}
         return GadgetState(**{k: v for k, v in res.items() if k in fields})
 
-    def plug(self, ro: bool | None = None) -> dict[str, Any]:
-        """Connect the gadget to the target.  ``ro`` defaults to the profile's ``readonly``."""
-        ro = self.config.readonly if ro is None else ro
-        return self._helper("plug", *self._id_args(), *(["--ro"] if ro else []), root=True)
+    def start(self) -> dict[str, Any]:
+        """Connect the gadget to the target, with the media as it was last left."""
+        return self._helper("start", *self._id_args(), root=True)
 
-    def unplug(self) -> dict[str, Any]:
+    def stop(self) -> dict[str, Any]:
         """Disconnect the gadget so the target sees no device."""
-        return self._helper("unplug", *self._id_args(), root=True)
+        return self._helper("stop", root=True)
+
+    def mount(self, ro: bool | None = None) -> dict[str, Any]:
+        """Insert the media.  ``ro`` defaults to the profile's ``readonly``."""
+        ro = self.config.readonly if ro is None else ro
+        return self._helper("mount", *(["--ro"] if ro else []), root=True)
+
+    insert = mount
+
+    def eject(self, force: bool = False) -> dict[str, Any]:
+        """Eject the media.  ``force`` ejects even if the target has it locked (mounted)."""
+        return self._helper("eject", *(["--force"] if force else []), root=True)
 
     def write(self, local: str, remote: str | None = None) -> dict[str, Any]:
         """Copy local file ``local`` into the image (default: its basename in the root)."""

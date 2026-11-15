@@ -37,9 +37,11 @@ class FakeGadget:
             if name in FakeGadget.raise_on:
                 raise FakeGadget.raise_on[name]
             return {
-                "state": GadgetState("plugged", "udc0", "configured", True, 64, 2**20),
-                "plug": {"ro": True, "changed": True},
-                "unplug": {"changed": True},
+                "state": GadgetState("started", "udc0", "configured", True, True, 64, 2**20),
+                "start": {"changed": True, "media": {"inserted": False, "ro": False}},
+                "stop": {"changed": True},
+                "mount": {"media": {"inserted": True, "ro": True}, "changed": True},
+                "eject": {"media": {"inserted": False, "ro": False}, "changed": False},
                 "rm": {"removed": "/d", "kind": "directory"},
                 "type": {"sent": 3},
             }.get(name, {})
@@ -61,28 +63,42 @@ def test_no_host_is_config_error(capsys):
 
 
 def test_global_options_before_or_after_command(fake):
-    assert cli.main(["--host", "pi", "plug", "--ro"]) == 0
-    assert cli.main(["plug", "--host", "pi", "--rw"]) == 0
-    assert [c[2] for c in fake.calls] == [{"ro": True}, {"ro": False}]
+    assert cli.main(["--host", "pi", "mount", "--ro"]) == 0
+    assert cli.main(["insert", "--host", "pi", "--rw"]) == 0
+    assert cli.main(["mount", "--host", "pi"]) == 0
+    assert [(c[0], c[2]) for c in fake.calls] == [
+        ("mount", {"ro": True}), ("mount", {"ro": False}), ("mount", {"ro": None})
+    ]  # fmt: skip
+
+
+def test_start_stop_eject_output(fake, capsys):
+    assert cli.main(["--host", "pi", "start"]) == 0
+    assert cli.main(["--host", "pi", "eject", "--force"]) == 0
+    assert cli.main(["--host", "pi", "stop"]) == 0
+    out = capsys.readouterr().out
+    assert "pi: started · media: ejected" in out
+    assert "pi: media ejected (already)" in out
+    assert "pi: stopped" in out
+    assert fake.calls[1][2] == {"force": True}
 
 
 def test_state_output(fake, capsys):
     assert cli.main(["--host", "pi", "state"]) == 0
     out = capsys.readouterr().out
-    assert "pi: plugged read-only (udc udc0, target: configured)" in out
+    assert "pi: started (udc udc0, target: configured) · media: inserted read-only" in out
     assert "1.0 MiB free" in out
 
 
 def test_quiet(fake, capsys):
-    cli.main(["-q", "--host", "pi", "unplug"])
+    cli.main(["-q", "--host", "pi", "stop"])
     assert capsys.readouterr().out == ""
 
 
 def test_remote_error_exit_code(fake, capsys):
-    fake.raise_on["write"] = WrongStateError("wrong_state", "cannot write while plugged", "unplug")
+    fake.raise_on["write"] = WrongStateError("wrong_state", "cannot write now", "eject first")
     assert cli.main(["--host", "pi", "write", "f"]) == 1
     err = capsys.readouterr().err
-    assert "cannot write while plugged" in err and "hint: unplug" in err
+    assert "cannot write now" in err and "hint: eject first" in err
 
 
 def test_type_from_stdin_with_enter(fake, monkeypatch):

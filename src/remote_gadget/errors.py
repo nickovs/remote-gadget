@@ -52,7 +52,7 @@ class NotInitialisedError(RemoteError):
 
 
 class WrongStateError(RemoteError):
-    """The gadget is in the wrong state, e.g. ``write`` while plugged."""
+    """The gadget is in the wrong state, e.g. ``write`` while the target can see the media."""
 
 
 class TypingTimeoutError(RemoteError):

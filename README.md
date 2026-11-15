@@ -7,14 +7,16 @@ Use it to get files onto or off a machine with no network, or to type into BIOS/
 setup screens, installers and login prompts.
 
 ```console
+$ remote-gadget start                   # target sees a keyboard and an empty drive
+lab-pi: started · media: ejected
 $ remote-gadget write firmware.bin      # copy into the gadget's drive
 wrote 1048576 bytes to /firmware.bin
-$ remote-gadget plug --ro               # target sees a (read-only) drive + keyboard
-lab-pi: plugged read-only
+$ remote-gadget insert --ro             # put the media in the drive, write-protected
+lab-pi: media inserted read-only
 $ remote-gadget type --enter 'fs0:\firmware-update.efi'
 typed 26 characters
-$ remote-gadget unplug
-lab-pi: unplugged
+$ remote-gadget eject
+lab-pi: media ejected
 ```
 
 ## How it works
@@ -25,10 +27,12 @@ Python helper, uploaded by `init`, builds a USB gadget through configfs with:
 * a **mass-storage** function backed by a FAT image file, and
 * a **boot-protocol keyboard** (HID).
 
-`unplug` detaches the gadget from the USB device controller, which turns off the
-data-line pull-up. The target sees the device removed, exactly as if the cable had been
-pulled out. `plug` reattaches it, and the target enumerates it again and rereads the drive.
-Files are copied in and out of the image with `mtools`, so no mounting is needed.
+The gadget works like a USB card reader with a keyboard attached. `start` and `stop`
+connect and disconnect the whole device: `stop` turns off the data-line pull-up, so the
+target sees the device removed exactly as if the cable had been pulled out. `mount`
+(or `insert`) and `eject` change only the media in the drive, so the keyboard stays
+usable while you change the drive's contents. Files are copied in and out of the image
+with `mtools`, so no mounting is needed on the Pi.
 
 See [docs/design.md](docs/design.md) for the full design.
 
@@ -83,7 +87,7 @@ nosudo   = false              ; true if the ssh user is root
 path     = /var/lib/remote-gadget
 size     = 64                 ; MiB, used when init creates the image
 keymap   = us                 ; any XKB layout on the Pi, e.g. gb, de, fr, de:nodeadkeys
-readonly = false              ; default for `plug`
+readonly = false              ; default for `mount`
 ; vendor_id = 0x1d6b          ; optional USB IDs (targets identify by class anyway)
 ; product_id = 0x0104
 ```
@@ -102,15 +106,17 @@ remote-gadget [global options] <command> [options]
 | Command | What it does |
 |---------|--------------|
 | `config -p NAME [settings] [--update\|--overwrite] [--user] [--unset KEY]` | Create or change a profile (see Configuration). |
-| `init [--install-packages] [--reboot] [--reformat -y]` | Set up the Pi: dwc2 overlay (with `dwc2` loaded by `plug`, not at boot), packages, state dir, storage image. Safe to re-run. Exit status 4 means a reboot is needed. |
+| `init [--install-packages] [--reboot] [--reformat -y]` | Set up the Pi: dwc2 overlay (with `dwc2` loaded by `start`, not at boot), packages, state dir, storage image. Safe to re-run. Exit status 4 means a reboot is needed. |
 | `doctor [--fix]` | Check connectivity, sudo, packages, overlay, dwc2 boot loading, UDC and image, and fix what it can. |
-| `state` | Show `uninitialised`, `stopped`, `unplugged` or `plugged` (with `read-only`/`read-write` and whether the target has configured the device), plus free space. |
-| `plug [--ro\|--rw]` | Connect to the target, optionally with the drive write-protected. |
-| `unplug` | Disconnect from the target. |
-| `write LOCAL [REMOTE]` | Copy a file into the drive. Refused while plugged. `REMOTE` defaults to `/<name>`; a trailing `/` means a directory. |
-| `read REMOTE [LOCAL] [-f]` | Copy a file out of the drive. Warns if plugged read-write. |
+| `state` | Show `uninitialised`, `stopped` or `started` (with whether the target has configured the device), the media (`inserted read-only`, `inserted read-write` or `ejected`), and free space. |
+| `start` | Connect to the target. The media is as you last left it (ejected on a fresh install), even after the Pi reboots. |
+| `stop` | Disconnect from the target, as if the cable had been pulled out. |
+| `mount [--ro\|--rw]`, `insert` | Put the media in the drive, optionally write-protected. To change mode, `eject` first. |
+| `eject [--force]` | Take the media out of the drive. Refused while the target has it mounted; `--force` ejects anyway (see below). |
+| `write LOCAL [REMOTE]` | Copy a file into the drive. Refused while the target can see the media (started and inserted). `REMOTE` defaults to `/<name>`; a trailing `/` means a directory. |
+| `read REMOTE [LOCAL] [-f]` | Copy a file out of the drive. Warns if the target can see the media read-write. |
 | `ls [DIR]` | List the drive. |
-| `rm [-r] REMOTE` | Delete a file or empty directory (`-r` deletes a directory tree). Refused while plugged. |
+| `rm [-r] REMOTE` | Delete a file or empty directory (`-r` deletes a directory tree). Refused while the target can see the media. |
 | `type [TEXT\|-] [--enter] [--timeout S] [--delay MS]` | Type text (from stdin if TEXT is omitted). |
 | `reset [--fswitch N]` | Send Ctrl-Alt-Del. Firmware and Linux text consoles reboot on it, but a Linux desktop or login screen usually does not. `--fswitch N` first sends Ctrl-Alt-F`N` (1–12) and waits 1 s, so that a Linux target switches to text console `N` before the Ctrl-Alt-Del. |
 
@@ -122,10 +128,22 @@ Global options include `-q/--quiet` (only warnings and errors are printed) and
 
 ### Sharing the drive with the target
 
-`unplug` is the same as pulling out the cable. If the target has the drive mounted
-read-write, **eject it on the target first**, or anything the target has not flushed yet is
-lost (and the filesystem may be left inconsistent). Plugging in with `--ro` avoids the
-problem when the target only needs to read.
+The usual cycle is `eject`, `write`, `insert`. While the target has the drive mounted,
+it locks the media, and `eject` is refused: unmount or eject it on the target first.
+When the target ejects the media itself (for example with "Eject" in its file manager),
+`state` shows it as ejected and you can `write` straight away. `eject --force` and `stop`
+both take the drive away regardless, so anything the target has not flushed yet is lost
+and its filesystem may be left inconsistent. Inserting with `--ro` avoids the problem
+when the target only needs to read.
+
+Some firmware does not notice a media change by itself. **In the EFI shell, run `map -r`
+after every `insert`**: without it, the shell keeps serving the old contents. Also note that
+if `map -r` runs while the media is ejected, the `fsN:` numbers of the other drives shift,
+so `fs0:` can become the internal disk. If a target still does not see new files after
+`insert`, `stop` and `start` make it enumerate the whole device again.
+
+On a Pi Zero powered from its own supply, the Pi cannot tell when the cable is pulled
+out, so `state` may still say `target: configured` afterwards.
 
 ### Typing
 
@@ -149,9 +167,10 @@ $ remote-gadget --host rgadget.local doctor
 from remote_gadget import Config, Gadget, TypingTimeoutError
 
 g = Gadget(Config.load(profile="lab-pi"), on_warning=print)
-g.unplug()
+g.start()
+g.eject()
 g.write("fw.bin", "/fw.bin")
-g.plug(ro=True)
+g.insert(ro=True)
 try:
     g.type("hello\n")
 except TypingTimeoutError as e:
@@ -168,8 +187,8 @@ $ uv run tox -p auto          # lint, mypy, py310-py313, and the helper on py3.9
 $ RGADGET_TEST_HOST=rgadget.local uv run pytest tests/integration
 ```
 
-The integration tests plug, unplug and write to the gadget's drive, but never type or
-send Ctrl-Alt-Del.
+The integration tests start and stop the gadget, insert and eject its media and write to
+its drive, but never type or send Ctrl-Alt-Del. The target must not have the drive mounted.
 
 ## License
 

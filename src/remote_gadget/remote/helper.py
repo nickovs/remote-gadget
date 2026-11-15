@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -38,12 +39,12 @@ GADGET_NAME = "rgadget"
 DEFAULT_VENDOR_ID = 0x1D6B  # Linux Foundation
 DEFAULT_PRODUCT_ID = 0x0104  # Multifunction Composite Gadget
 # Long enough that a host polling its hub port every few hundred ms sees the disconnect.
-MIN_UNPLUG_SECONDS = 1.0
+MIN_STOP_SECONDS = 1.0
 OVERLAY_LINE = "dtoverlay=dwc2,dr_mode=peripheral"
 # dwc2 pulls D+ up as soon as it probes, before any gadget is bound, so a target sees a
-# device that never answers and may stall its boot.  Keep it unloaded until `plug`.
+# device that never answers and may stall its boot.  Keep it unloaded until `start`.
 BLACKLIST_FILE = "etc/modprobe.d/remote-gadget.conf"
-BLACKLIST_TEXT = "# Added by remote-gadget: dwc2 is loaded by `plug`\nblacklist dwc2\n"
+BLACKLIST_TEXT = "# Added by remote-gadget: dwc2 is loaded by `start`\nblacklist dwc2\n"
 UDC_PROBE_SECONDS = 2.0
 
 # Standard boot-protocol keyboard report descriptor (kernel Documentation/usb/gadget_hid.rst).
@@ -351,11 +352,11 @@ def check_blacklist(ctx: Ctx) -> Check:
     if not pi_model(ctx):
         return _check("dwc2-boot", "unknown", "not a Raspberry Pi; dwc2 loading not checked")
     if dwc2_blacklisted(ctx):
-        return _check("dwc2-boot", "ok", "dwc2 not loaded at boot (loaded by plug)")
+        return _check("dwc2-boot", "ok", "dwc2 not loaded at boot (loaded by start)")
     return _check(
         "dwc2-boot",
         "fail",
-        "dwc2 loads at boot, so the target sees an unresponsive device until plug",
+        "dwc2 loads at boot, so the target sees an unresponsive device until start",
     )
 
 
@@ -381,9 +382,9 @@ def load_dwc2(ctx: Ctx) -> None:
 def check_configfs(ctx: Ctx) -> Check:
     if os.path.isdir(ctx.sys("sys/kernel/config/usb_gadget")):
         return _check("configfs", "ok", "configfs mounted and libcomposite loaded")
-    # Nothing loads libcomposite at boot; `plug` does.  Only fail if it cannot be loaded.
+    # Nothing loads libcomposite at boot; `start` does.  Only fail if it cannot be loaded.
     if run_cmd(["modprobe", "-n", "-q", "libcomposite"]).returncode == 0:
-        return _check("configfs", "ok", "libcomposite available (loaded on plug)")
+        return _check("configfs", "ok", "libcomposite available (loaded on start)")
     return _check("configfs", "fail", "libcomposite kernel module not available")
 
 
@@ -410,7 +411,7 @@ def check_udc(ctx: Ctx) -> Check:
         return _check("udc", "ok", "USB device controller: " + ", ".join(udcs))
     if pi_model(ctx) and dwc2_blacklisted(ctx) and not dwc2_loaded(ctx):
         if run_cmd(["modprobe", "-n", "-q", "dwc2"]).returncode == 0:
-            return _check("udc", "ok", "dwc2 available (loaded on plug)")
+            return _check("udc", "ok", "dwc2 available (loaded on start)")
         return _check("udc", "fail", "dwc2 kernel module not available")
     hint = "use a USB data cable in the device/OTG port"
     if pi_model(ctx):
@@ -494,7 +495,7 @@ def run_checks(ctx: Ctx, fix: bool, install_packages: bool = True) -> dict[str, 
                     if fixer is fix_overlay:
                         reboot = True
         results.append(res)
-    # With dwc2 blacklisted and unloaded, no UDC is normal: `plug` loads it.
+    # With dwc2 blacklisted and unloaded, no UDC is normal: `start` loads it.
     unloaded = dwc2_blacklisted(ctx) and not dwc2_loaded(ctx)
     if not list_udcs(ctx) and pi_model(ctx) and not unloaded:
         overlay = next(r for r in results if r["name"] == "boot-overlay")
@@ -531,7 +532,7 @@ def op_setup(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
     try:
         st = load_state(ctx)
     except HelperError:
-        st = {"initialised": True, "unplugged_at": None}
+        st = {"initialised": True, "stopped_at": None, "media": dict(EJECTED)}
     st.update(size=args.size, udc=udcs[0] if len(udcs) == 1 else st.get("udc"))
     save_state(ctx, st)
     return out
@@ -549,8 +550,9 @@ def ensure_image(ctx: Ctx, size_mb: int, reformat: bool) -> Check:
                 "`remote-gadget init --reformat` replaces it (contents are lost)",
             )
         return _check("image", "ok", f"{ctx.image} ({actual} MiB)")
-    if exists and read_attr(os.path.join(ctx.gadget, "UDC")):
-        raise HelperError("wrong_state", "cannot reformat while plugged", "unplug first")
+    if exists and target_sees_media(ctx):
+        raise HelperError("wrong_state", "cannot reformat while the target can see the media",
+                          "run `remote-gadget eject` first")  # fmt: skip
     uid, gid = owner_ids()
     tmp = ctx.image + ".new"
     with open(tmp, "wb") as f:
@@ -561,7 +563,7 @@ def ensure_image(ctx: Ctx, size_mb: int, reformat: bool) -> Check:
         os.unlink(tmp)
         raise HelperError("mkfs", "mkfs.vfat failed: " + r.stderr.decode(errors="replace"))
     os.replace(tmp, ctx.image)
-    if os.path.isdir(lun_dir(ctx)):
+    if read_attr(os.path.join(lun_dir(ctx), "file")):
         # The LUN still holds the old (now unlinked) file open; point it at the new one.
         write_attr(os.path.join(lun_dir(ctx), "file"), "")
         write_attr(os.path.join(lun_dir(ctx), "file"), ctx.image)
@@ -573,10 +575,40 @@ def ensure_image(ctx: Ctx, size_mb: int, reformat: bool) -> Check:
 # --------------------------------------------------------------------------- gadget
 
 
-def gadget_state(ctx: Ctx, st: dict[str, Any]) -> str:
-    if not os.path.isdir(ctx.gadget):
-        return "stopped"
-    return "plugged" if read_attr(os.path.join(ctx.gadget, "UDC")) else "unplugged"
+EJECTED = {"inserted": False, "ro": False}
+
+
+def gadget_state(ctx: Ctx) -> str:
+    """``started`` if the gadget is bound to a UDC, so the target can see it."""
+    return "started" if read_attr(os.path.join(ctx.gadget, "UDC")) else "stopped"
+
+
+def media_state(ctx: Ctx, st: dict[str, Any]) -> dict[str, bool]:
+    """The media state: from the LUN if the gadget exists, else as saved in ``st``.
+
+    The target can eject the media itself, so the LUN is the truth whenever it exists.
+    """
+    lun = lun_dir(ctx)
+    if os.path.isdir(lun):
+        inserted = bool(read_attr(os.path.join(lun, "file")))
+        return {"inserted": inserted, "ro": inserted and current_ro(ctx)}
+    media = st.get("media")
+    if isinstance(media, dict) and media.get("inserted"):
+        return {"inserted": True, "ro": bool(media.get("ro"))}
+    return dict(EJECTED)
+
+
+def sync_media(ctx: Ctx, st: dict[str, Any]) -> dict[str, bool]:
+    """Save the current media state so that it survives a reboot; return it."""
+    media = media_state(ctx, st)
+    if st.get("media") != media:
+        st["media"] = media
+        save_state(ctx, st)
+    return media
+
+
+def target_sees_media(ctx: Ctx) -> bool:
+    return gadget_state(ctx) == "started" and bool(read_attr(os.path.join(lun_dir(ctx), "file")))
 
 
 def udc_state(ctx: Ctx, udc: str) -> str:
@@ -602,7 +634,7 @@ def lun_dir(ctx: Ctx) -> str:
     return os.path.join(ctx.gadget, "functions/mass_storage.usb0/lun.0")
 
 
-def ensure_gadget(ctx: Ctx, vendor_id: int, product_id: int) -> None:
+def ensure_gadget(ctx: Ctx, vendor_id: int, product_id: int, media: dict[str, bool]) -> None:
     """Build the configfs gadget (idempotent).  Must only be called while unbound."""
     g = ctx.gadget
     os.makedirs(g, exist_ok=True)
@@ -635,55 +667,39 @@ def ensure_gadget(ctx: Ctx, vendor_id: int, product_id: int) -> None:
         os.makedirs(lun_dir(ctx), exist_ok=True)  # configfs creates lun.0 itself
         write_attr(os.path.join(ms, "stall"), 1)
         write_attr(os.path.join(lun_dir(ctx), "removable"), 1)
-        write_attr(os.path.join(lun_dir(ctx), "ro"), 0)
-        write_attr(os.path.join(lun_dir(ctx), "file"), ctx.image)
+        write_attr(os.path.join(lun_dir(ctx), "ro"), int(media["ro"]))
+        if media["inserted"]:
+            write_attr(os.path.join(lun_dir(ctx), "file"), ctx.image)
     for func in ("hid.usb0", "mass_storage.usb0"):
         link = os.path.join(cfg, func)
         if not os.path.islink(link):
             os.symlink(os.path.join(g, "functions", func), link)
 
 
-def start(ctx: Ctx, args: argparse.Namespace) -> None:
+def build(ctx: Ctx, args: argparse.Namespace, st: dict[str, Any]) -> None:
+    """Build the configfs gadget if needed, with the saved media state."""
     if not os.path.isdir(ctx.gadget):
         load_libcomposite(ctx)
         if not os.path.isdir(ctx.sys("sys/kernel/config/usb_gadget")):
             raise HelperError("configfs", "configfs usb_gadget not available", "run doctor")
-    if not read_attr(os.path.join(ctx.gadget, "UDC")):
-        ensure_gadget(ctx, args.vendor_id, args.product_id)
+    if gadget_state(ctx) == "stopped":
+        ensure_gadget(ctx, args.vendor_id, args.product_id, media_state(ctx, st))
 
 
 def current_ro(ctx: Ctx) -> bool:
     return read_attr(os.path.join(lun_dir(ctx), "ro"), "0") == "1"
 
 
-def set_ro(ctx: Ctx, ro: bool) -> None:
-    """Change the LUN's write protection.  The kernel refuses while a file is open."""
-    if current_ro(ctx) == ro:
-        return
-    lun = lun_dir(ctx)
-    image = read_attr(os.path.join(lun, "file")) or ctx.image
-    write_attr(os.path.join(lun, "file"), "")
-    write_attr(os.path.join(lun, "ro"), int(ro))
-    write_attr(os.path.join(lun, "file"), image)
-
-
-def op_plug(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
+def op_start(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
     require_root(ctx)
     st = load_state(ctx)
-    start(ctx, args)
-    if gadget_state(ctx, st) == "plugged":
-        if current_ro(ctx) != args.ro:
-            raise HelperError(
-                "wrong_state",
-                f"already plugged {'read-only' if current_ro(ctx) else 'read-write'}",
-                "unplug first",
-            )
-        return {"state": "plugged", "ro": args.ro, "changed": False}
-    set_ro(ctx, args.ro)
-    unplugged_at = st.get("unplugged_at")
-    if isinstance(unplugged_at, (int, float)):
-        wait = MIN_UNPLUG_SECONDS - (time.time() - unplugged_at)
-        if 0 < wait <= MIN_UNPLUG_SECONDS:
+    build(ctx, args, st)
+    if gadget_state(ctx) == "started":
+        return {"state": "started", "changed": False, "media": sync_media(ctx, st)}
+    stopped_at = st.get("stopped_at")
+    if isinstance(stopped_at, (int, float)):
+        wait = MIN_STOP_SECONDS - (time.time() - stopped_at)
+        if 0 < wait <= MIN_STOP_SECONDS:
             time.sleep(wait)
     # Load dwc2 only now, so the target sees it just before the gadget binds.
     if not list_udcs(ctx) and pi_model(ctx) and not dwc2_loaded(ctx):
@@ -691,39 +707,92 @@ def op_plug(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
     udc = choose_udc(ctx, st)
     write_attr(os.path.join(ctx.gadget, "UDC"), udc)
     st["udc"] = udc
+    st["media"] = media_state(ctx, st)
     save_state(ctx, st)
-    return {"state": "plugged", "ro": args.ro, "changed": True}
+    return {"state": "started", "changed": True, "media": st["media"]}
 
 
-def op_unplug(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
+def op_stop(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
     require_root(ctx)
     st = load_state(ctx)
-    start(ctx, args)
     udc_file = os.path.join(ctx.gadget, "UDC")
     udc = read_attr(udc_file)
     if not udc:
-        return {"state": "unplugged", "changed": False}
+        return {"state": "stopped", "changed": False}
     write_attr(udc_file, "")
     if read_attr(udc_file):
-        raise HelperError("unplug_failed", "UDC still bound after unplug")
+        raise HelperError("stop_failed", "UDC still bound after stop")
     after = udc_state(ctx, udc)
     if after != "not attached":
-        ctx.warn(f"UDC reports {after!r} after unplug; the target may still see the device")
-    st["unplugged_at"] = time.time()
+        ctx.warn(f"UDC reports {after!r} after stop; the target may still see the device")
+    st["stopped_at"] = time.time()
+    st["media"] = media_state(ctx, st)
     save_state(ctx, st)
-    return {"state": "unplugged", "changed": True}
+    return {"state": "stopped", "changed": True}
+
+
+def op_mount(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
+    require_root(ctx)
+    st = load_state(ctx)
+    media = media_state(ctx, st)
+    if media["inserted"]:
+        if media["ro"] != args.ro:
+            raise HelperError(
+                "wrong_state",
+                f"media already inserted {'read-only' if media['ro'] else 'read-write'}",
+                "run `remote-gadget eject` first",
+            )
+        return {"media": sync_media(ctx, st), "changed": False}
+    if not os.path.isfile(ctx.image):
+        raise HelperError("no_image", ctx.image + " missing", "run `remote-gadget init`")
+    lun = lun_dir(ctx)
+    if os.path.isdir(lun):
+        # The kernel only lets `ro` change while no file is open, which is now.
+        write_attr(os.path.join(lun, "ro"), int(args.ro))
+        write_attr(os.path.join(lun, "file"), ctx.image)
+    st["media"] = {"inserted": True, "ro": args.ro}
+    save_state(ctx, st)
+    return {"media": st["media"], "changed": True}
+
+
+def op_eject(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
+    require_root(ctx)
+    st = load_state(ctx)
+    if not media_state(ctx, st)["inserted"]:
+        return {"media": sync_media(ctx, st), "changed": False}
+    lun = lun_dir(ctx)
+    if os.path.isdir(lun):
+        if args.force:
+            write_attr(os.path.join(lun, "forced_eject"), 1)
+        else:
+            try:
+                with open(os.path.join(lun, "file"), "wb", buffering=0) as f:
+                    f.write(b"\n")
+            except OSError as e:
+                if e.errno != errno.EBUSY:
+                    raise HelperError("sysfs", f"cannot eject: {e.strerror}") from None
+                raise HelperError(
+                    "media_locked",
+                    "the target has the drive in use (for example mounted)",
+                    "unmount or eject it on the target, or use `eject --force`",
+                ) from None
+        if read_attr(os.path.join(lun, "file")):
+            raise HelperError("eject_failed", "media still inserted after eject")
+    st["media"] = dict(EJECTED)
+    save_state(ctx, st)
+    return {"media": st["media"], "changed": True}
 
 
 def op_state(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
     st = load_state(ctx)
-    state = gadget_state(ctx, st)
+    state = gadget_state(ctx)
+    media = sync_media(ctx, st)
     out: dict[str, Any] = {
-        "state": state, "udc": None, "udc_state": None, "ro": None,
+        "state": state, "udc": None, "udc_state": None, "inserted": media["inserted"],
+        "ro": media["ro"] if media["inserted"] else None,
         "size_mb": st.get("size"), "free_bytes": None,
     }  # fmt: skip
-    if state != "stopped":
-        out["ro"] = current_ro(ctx)
-    if state == "plugged":
+    if state == "started":
         out["udc"] = read_attr(os.path.join(ctx.gadget, "UDC"))
         out["udc_state"] = udc_state(ctx, out["udc"])
     try:
@@ -775,9 +844,12 @@ def image_free(ctx: Ctx) -> int:
 def op_img_put(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
     src = staging_file(ctx, args.name)
     try:
-        st = load_state(ctx)
-        if gadget_state(ctx, st) == "plugged":
-            raise HelperError("wrong_state", "cannot write while plugged", "unplug first")
+        load_state(ctx)
+        if target_sees_media(ctx):
+            raise HelperError(
+                "wrong_state", "cannot write while the target can see the media",
+                "run `remote-gadget eject` first",
+            )  # fmt: skip
         dst = image_path(args.dst)
         parts = dst[3:].split("/")
         for i in range(1, len(parts)):
@@ -792,9 +864,9 @@ def op_img_put(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
 
 
 def op_img_get(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
-    st = load_state(ctx)
-    if gadget_state(ctx, st) == "plugged" and not current_ro(ctx):
-        ctx.warn("gadget is plugged read-write: the target may have unflushed writes")
+    load_state(ctx)
+    if target_sees_media(ctx) and not current_ro(ctx):
+        ctx.warn("media is inserted read-write: the target may have unflushed writes")
     dst = staging_file(ctx, args.name)
     mtool(ctx, ["mcopy", "-n", image_path(args.src), dst])
     return {"bytes": os.path.getsize(dst)}
@@ -807,10 +879,13 @@ def op_img_ls(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
 
 def op_img_rm(ctx: Ctx, args: argparse.Namespace) -> dict[str, Any]:
     """Delete a file, an empty directory, or (with --recursive) a directory tree."""
-    st = load_state(ctx)
-    if gadget_state(ctx, st) == "plugged":
+    load_state(ctx)
+    if target_sees_media(ctx):
         # The target caches the FAT; changing it underneath would corrupt the drive.
-        raise HelperError("wrong_state", "cannot delete while plugged", "unplug first")
+        raise HelperError(
+            "wrong_state", "cannot delete while the target can see the media",
+            "run `remote-gadget eject` first",
+        )  # fmt: skip
     target = image_path(args.target)
     if target == "::/":
         raise HelperError("bad_path", "refusing to delete the root of the drive")
@@ -1003,9 +1078,9 @@ def send_keys(dev: str, keys: list[tuple[int, int]], timeout: float, delay: floa
 
 
 def require_configured(ctx: Ctx) -> None:
-    st = load_state(ctx)
-    if gadget_state(ctx, st) != "plugged":
-        raise HelperError("wrong_state", "gadget is not plugged in", "run `remote-gadget plug`")
+    load_state(ctx)
+    if gadget_state(ctx) != "started":
+        raise HelperError("wrong_state", "gadget is not started", "run `remote-gadget start`")
     udc = read_attr(os.path.join(ctx.gadget, "UDC"))
     state = udc_state(ctx, udc)
     if state != "configured":
@@ -1093,12 +1168,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reformat", action="store_true")
     sp.add_argument("--install-packages", action="store_true")
     add("doctor", op_doctor).add_argument("--fix", action="store_true")
-    for name, func in (("plug", op_plug), ("unplug", op_unplug)):
-        sp = add(name, func)
-        sp.add_argument("--vendor-id", type=_hex16, default=DEFAULT_VENDOR_ID)
-        sp.add_argument("--product-id", type=_hex16, default=DEFAULT_PRODUCT_ID)
-        if name == "plug":
-            sp.add_argument("--ro", action="store_true")
+    sp = add("start", op_start)
+    sp.add_argument("--vendor-id", type=_hex16, default=DEFAULT_VENDOR_ID)
+    sp.add_argument("--product-id", type=_hex16, default=DEFAULT_PRODUCT_ID)
+    add("stop", op_stop)
+    add("mount", op_mount).add_argument("--ro", action="store_true")
+    add("eject", op_eject).add_argument("--force", action="store_true")
     add("state", op_state)
     sp = add("img-put", op_img_put)
     sp.add_argument("name")

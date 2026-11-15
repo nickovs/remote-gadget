@@ -53,9 +53,14 @@ class FakeHost:
         (self.root / "etc/machine-id").write_text("0123456789abcdef0123\n")
 
     def initialise(self, **state: object) -> None:
-        st = {"initialised": True, "size": 64, "udc": None, "unplugged_at": None}
+        st = {"initialised": True, "size": 64, "udc": None, "stopped_at": None}
         st.update(state)
         (self.path / "state.json").write_text(json.dumps(st))
+        self.image.touch()
+
+    @property
+    def image(self) -> Path:
+        return self.path / "image.img"
 
     def state(self) -> dict:
         return json.loads((self.path / "state.json").read_text())

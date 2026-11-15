@@ -53,8 +53,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = p.add_subparsers(dest="command", required=True, metavar="command")
 
-    def add(name: str, help: str) -> argparse.ArgumentParser:
-        return sub.add_parser(name, help=help, description=help, parents=[common])
+    def add(name: str, help: str, aliases: Sequence[str] = ()) -> argparse.ArgumentParser:
+        return sub.add_parser(
+            name, help=help, description=help, parents=[common], aliases=list(aliases)
+        )
 
     sp = add("config", "create or change a profile in ./.rgadget (or ~/.rgadget)")
     how = sp.add_mutually_exclusive_group()
@@ -67,17 +69,21 @@ def build_parser() -> argparse.ArgumentParser:
     )  # fmt: skip
     ro = sp.add_mutually_exclusive_group()
     ro.add_argument(
-        "--ro", dest="readonly", action="store_true", default=None, help="plug read-only by default"
+        "--ro",
+        dest="readonly",
+        action="store_true",
+        default=None,
+        help="mount read-only by default",
     )
     ro.add_argument(
-        "--rw", dest="readonly", action="store_false", help="plug read-write by default"
+        "--rw", dest="readonly", action="store_false", help="mount read-write by default"
     )
     sp = add("init", "set up the gadget host (idempotent)")
     sp.add_argument("--reboot", action="store_true", help="reboot if needed")
     sp.add_argument("--install-packages", action="store_true", help="apt-get install tools")
     sp.add_argument("--reformat", action="store_true", help="recreate the image (erases it)")
     sp.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
-    add("state", "show whether the gadget is plugged in")
+    add("state", "show whether the gadget is started and the media inserted")
     add("doctor", "diagnose problems").add_argument(
         "--fix", action="store_true", help="fix what can be fixed"
     )
@@ -92,11 +98,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp = add("rm", "delete a file or directory from the gadget's storage")
     sp.add_argument("remote")
     sp.add_argument("-r", "--recursive", action="store_true", help="delete a directory tree")
-    sp = add("plug", "connect the gadget to the target")
+    add("start", "connect the gadget to the target")
+    add("stop", "disconnect the gadget from the target")
+    sp = add("mount", "insert the media into the gadget's drive", aliases=["insert"])
     mode = sp.add_mutually_exclusive_group()
     mode.add_argument("--ro", dest="ro", action="store_true", default=None, help="read-only")
     mode.add_argument("--rw", dest="ro", action="store_false", help="read-write")
-    add("unplug", "disconnect the gadget from the target")
+    sp = add("eject", "eject the media from the gadget's drive")
+    sp.add_argument("--force", action="store_true", help="eject even if the target is using it")
     sp = add("type", "type text on the target (from TEXT or stdin)")
     sp.add_argument("text", nargs="?", help="text to type; '-' or omitted reads stdin")
     sp.add_argument("--enter", action="store_true", help="press Enter after the text")
@@ -128,6 +137,10 @@ def load_config(args: argparse.Namespace, out: Reporter) -> Config:
     for w in caught:
         out.warn(str(w.message))
     return cfg
+
+
+def _media(inserted: bool, ro: bool | None) -> str:
+    return f"inserted {'read-only' if ro else 'read-write'}" if inserted else "ejected"
 
 
 def _print_checks(out: Reporter, checks: list[dict[str, Any]]) -> None:
@@ -208,9 +221,10 @@ def run(args: argparse.Namespace, out: Reporter) -> int:
     elif cmd == "state":
         st = g.state()
         line = f"{name}: {st.state}"
-        if st.state == "plugged":
-            line += f" {'read-only' if st.ro else 'read-write'}"
+        if st.state == "started":
             line += f" (udc {st.udc}, target: {st.udc_state})"
+        if st.inserted is not None:
+            line += f" · media: {_media(st.inserted, st.ro)}"
         out.info(line)
         if st.size_mb is not None:
             free = "" if st.free_bytes is None else f", {st.free_bytes / 2**20:.1f} MiB free"
@@ -226,13 +240,22 @@ def run(args: argparse.Namespace, out: Reporter) -> int:
     elif cmd == "rm":
         res = g.rm(args.remote, recursive=args.recursive)
         out.success(f"deleted {res['kind']} {res['removed']}")
-    elif cmd == "plug":
-        res = g.plug(ro=args.ro)
-        mode = "read-only" if res["ro"] else "read-write"
-        out.success(f"{name}: plugged {mode}" + ("" if res["changed"] else " (already)"))
-    elif cmd == "unplug":
-        res = g.unplug()
-        out.success(f"{name}: unplugged" + ("" if res["changed"] else " (already)"))
+    elif cmd == "start":
+        res = g.start()
+        media = _media(res["media"]["inserted"], res["media"]["ro"])
+        out.success(
+            f"{name}: started" + ("" if res["changed"] else " (already)") + f" · media: {media}"
+        )
+    elif cmd == "stop":
+        res = g.stop()
+        out.success(f"{name}: stopped" + ("" if res["changed"] else " (already)"))
+    elif cmd in ("mount", "insert"):
+        res = g.mount(ro=args.ro)
+        media = _media(True, res["media"]["ro"])
+        out.success(f"{name}: media {media}" + ("" if res["changed"] else " (already)"))
+    elif cmd == "eject":
+        res = g.eject(force=args.force)
+        out.success(f"{name}: media ejected" + ("" if res["changed"] else " (already)"))
     elif cmd == "type":
         text = sys.stdin.read() if args.text in (None, "-") else args.text
         if args.enter:
